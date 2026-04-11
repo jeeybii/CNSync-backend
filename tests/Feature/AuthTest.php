@@ -7,19 +7,24 @@ use Illuminate\Support\Facades\Hash;
 
 test('register creates a user and returns a token', function () {
     $response = $this->postJson('/api/register', [
-        'name' => 'Test User',
+        'first_name' => 'Test',
+        'last_name' => 'User',
         'email' => 'test@example.com',
         'password' => 'password123',
         'password_confirmation' => 'password123',
+        'role' => 'faculty',
     ]);
 
     $response->assertCreated()
         ->assertJsonStructure([
-            'user' => ['id', 'name', 'email'],
+            'user' => ['id', 'first_name', 'last_name', 'email', 'role'],
             'token',
             'token_type',
         ])
         ->assertJsonPath('user.email', 'test@example.com')
+        ->assertJsonPath('user.first_name', 'Test')
+        ->assertJsonPath('user.last_name', 'User')
+        ->assertJsonPath('user.role', 'faculty')
         ->assertJsonPath('token_type', 'Bearer');
 
     expect(User::where('email', 'test@example.com')->exists())->toBeTrue();
@@ -38,10 +43,26 @@ test('login returns a token for valid credentials', function () {
 
     $response->assertOk()
         ->assertJsonStructure([
-            'user' => ['id', 'name', 'email'],
+            'user' => ['id', 'first_name', 'last_name', 'email', 'role'],
             'token',
             'token_type',
         ]);
+});
+
+test('register accepts camelCase firstName and lastName', function () {
+    $response = $this->postJson('/api/register', [
+        'firstName' => 'Jane',
+        'lastName' => 'Doe',
+        'email' => 'jane@example.com',
+        'password' => 'password123',
+        'password_confirmation' => 'password123',
+        'role' => 'student',
+    ]);
+
+    $response->assertCreated()
+        ->assertJsonPath('user.first_name', 'Jane')
+        ->assertJsonPath('user.last_name', 'Doe')
+        ->assertJsonPath('user.role', 'student');
 });
 
 test('login rejects invalid credentials', function () {
