@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Enums\DocumentStatus;
 use App\Models\Document;
+use App\Services\DocumentTextExtractor;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
@@ -15,7 +16,7 @@ class ProcessDocumentJob implements ShouldQueue
         public int $documentId
     ) {}
 
-    public function handle(): void
+    public function handle(DocumentTextExtractor $extractor): void
     {
         $document = Document::query()->find($this->documentId);
 
@@ -23,12 +24,20 @@ class ProcessDocumentJob implements ShouldQueue
             return;
         }
 
-        $document->update(['status' => DocumentStatus::Processing]);
+        try {
+            $document->transitionTo(DocumentStatus::Parsing);
 
-        // Stub: real parsing / chunking will run here later.
-        $document->update([
-            'status' => DocumentStatus::Ready,
-            'failed_reason' => null,
-        ]);
+            $chunks = $extractor->extract($document);
+
+            $document->extractedChunks()->delete();
+            $document->extractedChunks()->createMany($chunks);
+
+            $document->transitionTo(DocumentStatus::Extracted);
+            $document->transitionTo(DocumentStatus::Analyzed);
+        } catch (\Throwable $exception) {
+            $document->transitionTo(DocumentStatus::Failed, $exception->getMessage());
+
+            throw $exception;
+        }
     }
 }

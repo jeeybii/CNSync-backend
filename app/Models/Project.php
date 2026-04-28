@@ -28,4 +28,19 @@ class Project extends Model
     {
         return $this->hasMany(Document::class);
     }
+
+    public function tosRuns(): HasMany
+    {
+        return $this->hasMany(TosRun::class);
+    }
+
+    public function questionRuns(): HasMany
+    {
+        return $this->hasMany(QuestionRun::class);
+    }
+
+    public function syllabusTopics(): HasMany
+    {
+        return $this->hasMany(SyllabusTopic::class);
+    }
 }

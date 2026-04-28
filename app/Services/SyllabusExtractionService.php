@@ -1,0 +1,127 @@
+<?php
+
+namespace App\Services;
+
+use App\Enums\BloomLevel;
+use App\Models\Document;
+use Illuminate\Support\Facades\Http;
+use RuntimeException;
+
+class SyllabusExtractionService
+{
+    /**
+     * @return array<int, array{topic_name:string,hours:float,objective:?string,bloom_level:?string,confidence:?float}>
+     */
+    public function extract(Document $document): array
+    {
+        $apiKey = (string) config('services.gemini.api_key');
+        if (blank($apiKey)) {
+            throw new RuntimeException('Gemini API key is missing. Set GEMINI_API_KEY in .env.');
+        }
+
+        $chunkText = $document->extractedChunks()
+            ->orderBy('chunk_index')
+            ->get(['content', 'page_number'])
+            ->map(fn ($chunk): string => sprintf(
+                '[Page %s] %s',
+                $chunk->page_number ?? 'n/a',
+                $chunk->content,
+            ))
+            ->implode("\n\n");
+
+        if (blank($chunkText)) {
+            throw new RuntimeException('No extracted syllabus content found for AI extraction.');
+        }
+
+        $prompt = implode("\n", [
+            'Extract syllabus topics into strict JSON.',
+            'Return JSON object with key "topics".',
+            'topics must be an array of objects with: topic_name, hours, objective, bloom_level, confidence.',
+            'hours must be numeric and positive.',
+            'confidence must be 0 to 1.',
+            'Do not include markdown, only JSON.',
+            'Syllabus content:',
+            $chunkText,
+        ]);
+
+        $model = (string) config('services.gemini.model');
+        $baseUrl = rtrim((string) config('services.gemini.base_url'), '/');
+        $url = sprintf('%s/v1beta/models/%s:generateContent?key=%s', $baseUrl, $model, $apiKey);
+
+        $response = Http::timeout(40)
+            ->connectTimeout(10)
+            ->retry(2, 500)
+            ->post($url, [
+                'contents' => [
+                    [
+                        'parts' => [
+                            ['text' => $prompt],
+                        ],
+                    ],
+                ],
+                'generationConfig' => [
+                    'temperature' => 0.1,
+                    'responseMimeType' => 'application/json',
+                ],
+            ]);
+
+        $response->throw();
+
+        $jsonText = data_get($response->json(), 'candidates.0.content.parts.0.text');
+        if (! is_string($jsonText) || blank($jsonText)) {
+            throw new RuntimeException('Gemini returned an empty syllabus extraction payload.');
+        }
+
+        /** @var mixed $parsed */
+        $parsed = json_decode($jsonText, true);
+        if (! is_array($parsed) || ! isset($parsed['topics']) || ! is_array($parsed['topics'])) {
+            throw new RuntimeException('Syllabus extraction response is not valid JSON schema.');
+        }
+
+        $topics = [];
+        foreach ($parsed['topics'] as $topic) {
+            if (! is_array($topic)) {
+                continue;
+            }
+
+            $name = $topic['topic_name'] ?? null;
+            $hours = $topic['hours'] ?? null;
+
+            if (! is_string($name) || blank($name) || ! is_numeric($hours) || (float) $hours <= 0) {
+                continue;
+            }
+
+            $confidence = isset($topic['confidence']) && is_numeric($topic['confidence'])
+                ? max(0.0, min(1.0, (float) $topic['confidence']))
+                : null;
+
+            $topics[] = [
+                'topic_name' => trim($name),
+                'hours' => (float) $hours,
+                'objective' => isset($topic['objective']) && is_string($topic['objective'])
+                    ? trim($topic['objective'])
+                    : null,
+                'bloom_level' => $this->normalizeBloomLevel($topic['bloom_level'] ?? null),
+                'confidence' => $confidence,
+            ];
+        }
+
+        if (empty($topics)) {
+            throw new RuntimeException('Syllabus extraction did not produce any valid topic rows.');
+        }
+
+        return $topics;
+    }
+
+    private function normalizeBloomLevel(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $normalized = strtolower(trim($value));
+        $allowed = BloomLevel::values();
+
+        return in_array($normalized, $allowed, true) ? $normalized : null;
+    }
+}
