@@ -92,6 +92,9 @@ class DocumentController extends Controller
         Document $document,
         SyllabusExtractionService $extractor
     ): JsonResponse {
+        // AI extraction can exceed the default 30s execution limit during model backoff/retries.
+        set_time_limit(180);
+
         if ($document->kind !== DocumentKind::Syllabus) {
             return response()->json([
                 'message' => 'Only syllabus documents can be processed by syllabus extraction.',

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\BloomLevel;
 use App\Models\Document;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Http\Client\Response;
 use RuntimeException;
 
 class SyllabusExtractionService
@@ -44,28 +45,8 @@ class SyllabusExtractionService
             $chunkText,
         ]);
 
-        $model = (string) config('services.gemini.model');
         $baseUrl = rtrim((string) config('services.gemini.base_url'), '/');
-        $url = sprintf('%s/v1beta/models/%s:generateContent?key=%s', $baseUrl, $model, $apiKey);
-
-        $response = Http::timeout(40)
-            ->connectTimeout(10)
-            ->retry(2, 500)
-            ->post($url, [
-                'contents' => [
-                    [
-                        'parts' => [
-                            ['text' => $prompt],
-                        ],
-                    ],
-                ],
-                'generationConfig' => [
-                    'temperature' => 0.1,
-                    'responseMimeType' => 'application/json',
-                ],
-            ]);
-
-        $response->throw();
+        $response = $this->callGeminiWithFallback($baseUrl, $apiKey, $prompt);
 
         $jsonText = data_get($response->json(), 'candidates.0.content.parts.0.text');
         if (! is_string($jsonText) || blank($jsonText)) {
@@ -123,5 +104,57 @@ class SyllabusExtractionService
         $allowed = BloomLevel::values();
 
         return in_array($normalized, $allowed, true) ? $normalized : null;
+    }
+
+    private function callGeminiWithFallback(string $baseUrl, string $apiKey, string $prompt): Response
+    {
+        $models = array_values(array_unique(array_filter([
+            (string) config('services.gemini.model'),
+            (string) config('services.gemini.fallback_model'),
+        ])));
+
+        $retries = max(1, (int) config('services.gemini.retries', 5));
+        $sleepMs = max(200, (int) config('services.gemini.retry_sleep_ms', 1500));
+        $lastResponse = null;
+
+        foreach ($models as $model) {
+            $url = sprintf('%s/v1beta/models/%s:generateContent?key=%s', $baseUrl, $model, $apiKey);
+
+            for ($attempt = 1; $attempt <= $retries; $attempt++) {
+                $response = Http::timeout(40)
+                    ->connectTimeout(10)
+                    ->post($url, [
+                        'contents' => [
+                            [
+                                'parts' => [
+                                    ['text' => $prompt],
+                                ],
+                            ],
+                        ],
+                        'generationConfig' => [
+                            'temperature' => 0.1,
+                            'responseMimeType' => 'application/json',
+                        ],
+                    ]);
+
+                if ($response->successful()) {
+                    return $response;
+                }
+
+                $lastResponse = $response;
+                $isRetryable = in_array($response->status(), [429, 500, 502, 503, 504], true);
+                if (! $isRetryable) {
+                    break;
+                }
+
+                usleep($sleepMs * 1000 * $attempt);
+            }
+        }
+
+        if ($lastResponse !== null) {
+            $lastResponse->throw();
+        }
+
+        throw new RuntimeException('Gemini request failed without a response.');
     }
 }

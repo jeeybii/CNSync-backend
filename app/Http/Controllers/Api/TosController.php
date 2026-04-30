@@ -9,6 +9,7 @@ use App\Models\Document;
 use App\Models\Project;
 use App\Models\SyllabusTopic;
 use App\Models\TosRun;
+use App\Services\GeminiBloomDistributionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -55,7 +56,11 @@ class TosController extends Controller
         return response()->json(['data' => $tosRun], 201);
     }
 
-    public function storeFromSyllabus(Request $request, Project $project): JsonResponse
+    public function storeFromSyllabus(
+        Request $request,
+        Project $project,
+        GeminiBloomDistributionService $bloomDistributionService
+    ): JsonResponse
     {
         $validated = $request->validate([
             'total_items' => ['required', 'integer', 'min:1', 'max:500'],
@@ -80,7 +85,22 @@ class TosController extends Controller
         }
 
         $totalItems = (int) $validated['total_items'];
-        $bloomDistribution = $this->normalizeBloomDistribution($validated['bloom_distribution'] ?? []);
+        if (array_key_exists('bloom_distribution', $validated)) {
+            $bloomDistribution = $this->normalizeBloomDistribution($validated['bloom_distribution']);
+        } else {
+            $topicsForBloomInference = $document->syllabusTopics()
+                ->orderByDesc('hours')
+                ->get(['topic_name', 'hours', 'objective', 'bloom_level'])
+                ->map(fn (SyllabusTopic $topic): array => [
+                    'name' => $topic->topic_name,
+                    'hours' => $topic->hours,
+                    'objective' => $topic->objective,
+                    'bloom_level' => $topic->bloom_level,
+                ])
+                ->all();
+
+            $bloomDistribution = $bloomDistributionService->infer($topicsForBloomInference);
+        }
         $topicWeights = $this->buildTopicWeights($topics);
         $topicItemCounts = $this->allocateByLargestRemainder($topicWeights, $totalItems);
 

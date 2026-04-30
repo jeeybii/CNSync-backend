@@ -75,7 +75,7 @@ test('faculty can generate grounded question run from tos allocations', function
         ->assertJsonPath('data.generated_items', 2)
         ->assertJsonCount(2, 'data.items');
 
-    Http::assertSentCount(2);
+    Http::assertSentCount(3);
 });
 
 test('question generation returns validation error when analyzed documents are missing', function () {

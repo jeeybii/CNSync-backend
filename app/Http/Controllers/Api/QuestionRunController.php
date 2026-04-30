@@ -27,6 +27,10 @@ class QuestionRunController extends Controller
 
     public function store(Request $request, Project $project, GeminiQuestionGenerator $generator): JsonResponse
     {
+        // Question generation can take long when model capacity is constrained.
+        // Allow this request to run without PHP execution timeout.
+        set_time_limit(0);
+
         $validated = $request->validate([
             'tos_run_id' => ['nullable', 'integer'],
         ]);
@@ -34,7 +38,7 @@ class QuestionRunController extends Controller
         $tosRun = $this->resolveTosRun($project, $validated['tos_run_id'] ?? null);
         $documents = Document::query()
             ->where('project_id', $project->id)
-            ->where('status', DocumentStatus::Analyzed)
+            ->whereIn('status', [DocumentStatus::Analyzed, DocumentStatus::TosReady])
             ->with('extractedChunks')
             ->get();
 
@@ -55,21 +59,65 @@ class QuestionRunController extends Controller
         $createdItems = [];
 
         try {
-            foreach ($tosRun->allocations as $allocation) {
-                for ($i = 0; $i < $allocation->item_count; $i++) {
-                    $contexts = $generator->retrieveContext($allocation->topic_name, $documents->all());
-                    $generated = $generator->generate($allocation, $contexts);
+            $requests = [];
+            $contextsByRequestId = [];
 
-                    $createdItems[] = [
+            foreach ($tosRun->allocations as $allocation) {
+                $contexts = $generator->retrieveContext($allocation->topic_name, $documents->all());
+                for ($i = 0; $i < $allocation->item_count; $i++) {
+                    $requestId = sprintf(
+                        'alloc-%d-item-%d',
+                        $allocation->id,
+                        $i + 1,
+                    );
+
+                    $requests[] = [
+                        'id' => $requestId,
                         'topic_name' => $allocation->topic_name,
                         'bloom_level' => $allocation->bloom_level->value,
-                        'sequence' => $sequence++,
-                        'question_text' => $generated['question_text'],
-                        'options' => $generated['options'],
-                        'answer_key' => $generated['answer_key'],
-                        'citations' => $generated['citations'],
                     ];
+                    $contextsByRequestId[$requestId] = $contexts;
                 }
+            }
+
+            $generatedByRequest = [];
+            try {
+                $generatedByRequest = $generator->generateBatch($requests, $contextsByRequestId);
+            } catch (\Throwable) {
+                // Batch generation is a cost/latency optimization.
+                // If the model returns non-batch schema, fallback to per-item generation.
+                $generatedByRequest = [];
+            }
+
+            foreach ($requests as $requestSpec) {
+                $requestId = $requestSpec['id'];
+                $generated = $generatedByRequest[$requestId] ?? null;
+
+                // Regenerate only missing/invalid rows to keep API costs lower than all-single mode.
+                if (! is_array($generated)) {
+                    $generated = $generator->generateOne(
+                        $requestSpec['topic_name'],
+                        $requestSpec['bloom_level'],
+                        $contextsByRequestId[$requestId],
+                    );
+                }
+
+                $createdItems[] = [
+                    'topic_name' => $requestSpec['topic_name'],
+                    'bloom_level' => $requestSpec['bloom_level'],
+                    'sequence' => $sequence++,
+                    'question_text' => $generated['question_text'],
+                    'options' => $generated['options'],
+                    'answer_key' => $generated['answer_key'],
+                    'citations' => $generated['citations'] ?? collect($contextsByRequestId[$requestId])
+                        ->map(fn (array $chunk): array => [
+                            'document_id' => $chunk['document_id'],
+                            'page_number' => $chunk['page_number'],
+                        ])
+                        ->unique()
+                        ->values()
+                        ->all(),
+                ];
             }
 
             DB::transaction(function () use ($questionRun, $createdItems): void {

@@ -7,6 +7,7 @@ use App\Models\Project;
 use App\Models\SyllabusTopic;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Http;
 
 function facultyTosAuthHeader(User $user): array
 {
@@ -88,6 +89,24 @@ test('tos run request validates required fields', function () {
 });
 
 test('faculty can create tos run from extracted syllabus topics', function () {
+    config()->set('services.gemini.api_key', 'test-key');
+    Http::fake([
+        '*' => Http::response([
+            'candidates' => [[
+                'content' => [
+                    'parts' => [[
+                        'text' => json_encode([
+                            'knowledge' => 0.1,
+                            'comprehension' => 0.2,
+                            'application' => 0.5,
+                            'analysis' => 0.2,
+                        ], JSON_THROW_ON_ERROR),
+                    ]],
+                ],
+            ]],
+        ], 200),
+    ]);
+
     $user = User::factory()->create();
     $project = Project::factory()->for($user)->create();
 
@@ -118,5 +137,6 @@ test('faculty can create tos run from extracted syllabus topics', function () {
     ], facultyTosAuthHeader($user))
         ->assertCreated()
         ->assertJsonPath('data.total_items', 10)
-        ->assertJsonPath('data.topics.0.name', 'Topic A');
+        ->assertJsonPath('data.topics.0.name', 'Topic A')
+        ->assertJsonPath('data.bloom_distribution.application', 0.5);
 });
