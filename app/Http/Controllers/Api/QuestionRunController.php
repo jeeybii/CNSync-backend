@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\DocumentKind;
 use App\Enums\DocumentStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Document;
@@ -11,7 +12,9 @@ use App\Models\TosRun;
 use App\Services\GeminiQuestionGenerator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class QuestionRunController extends Controller
 {
@@ -33,22 +36,26 @@ class QuestionRunController extends Controller
 
         $validated = $request->validate([
             'tos_run_id' => ['nullable', 'integer'],
+            'question_type_distribution' => ['sometimes', 'array'],
+            'question_type_distribution.multiple_choice' => ['required_with:question_type_distribution', 'integer', 'min:0'],
+            'question_type_distribution.true_false' => ['required_with:question_type_distribution', 'integer', 'min:0'],
         ]);
 
         $tosRun = $this->resolveTosRun($project, $validated['tos_run_id'] ?? null);
+        $requestedItems = (int) $tosRun->allocations->sum('item_count');
+        $questionTypePlan = $this->resolveQuestionTypePlan($requestedItems, $validated['question_type_distribution'] ?? null);
         $documents = Document::query()
             ->where('project_id', $project->id)
             ->whereIn('status', [DocumentStatus::Analyzed, DocumentStatus::TosReady])
             ->with('extractedChunks')
             ->get();
 
-        if ($documents->isEmpty()) {
+        if ($documents->isEmpty() || ! $this->hasRequiredDocumentKinds($documents)) {
             return response()->json([
-                'message' => 'No analyzed documents are available for grounded question generation.',
+                'message' => 'Question generation requires one analyzed syllabus and at least one analyzed learning material.',
             ], 422);
         }
 
-        $requestedItems = (int) $tosRun->allocations->sum('item_count');
         $questionRun = $project->questionRuns()->create([
             'tos_run_id' => $tosRun->id,
             'requested_items' => $requestedItems,
@@ -61,6 +68,8 @@ class QuestionRunController extends Controller
         try {
             $requests = [];
             $contextsByRequestId = [];
+            $questionTypesByRequestId = [];
+            $questionTypeIndex = 0;
 
             foreach ($tosRun->allocations as $allocation) {
                 $contexts = $generator->retrieveContext($allocation->topic_name, $documents->all());
@@ -75,8 +84,11 @@ class QuestionRunController extends Controller
                         'id' => $requestId,
                         'topic_name' => $allocation->topic_name,
                         'bloom_level' => $allocation->bloom_level->value,
+                        'question_type' => $questionTypePlan[$questionTypeIndex],
                     ];
                     $contextsByRequestId[$requestId] = $contexts;
+                    $questionTypesByRequestId[$requestId] = $questionTypePlan[$questionTypeIndex];
+                    $questionTypeIndex++;
                 }
             }
 
@@ -98,6 +110,7 @@ class QuestionRunController extends Controller
                     $generated = $generator->generateOne(
                         $requestSpec['topic_name'],
                         $requestSpec['bloom_level'],
+                        $questionTypesByRequestId[$requestId],
                         $contextsByRequestId[$requestId],
                     );
                 }
@@ -105,6 +118,7 @@ class QuestionRunController extends Controller
                 $createdItems[] = [
                     'topic_name' => $requestSpec['topic_name'],
                     'bloom_level' => $requestSpec['bloom_level'],
+                    'question_type' => $questionTypesByRequestId[$requestId],
                     'sequence' => $sequence++,
                     'question_text' => $generated['question_text'],
                     'options' => $generated['options'],
@@ -164,5 +178,43 @@ class QuestionRunController extends Controller
             ->with('allocations')
             ->latest('id')
             ->firstOrFail();
+    }
+
+    /**
+     * @param  array<string, int>|null  $distribution
+     * @return array<int, string>
+     */
+    private function resolveQuestionTypePlan(int $requestedItems, ?array $distribution): array
+    {
+        if ($distribution === null) {
+            return array_fill(0, $requestedItems, 'multiple_choice');
+        }
+
+        $multipleChoice = (int) ($distribution['multiple_choice'] ?? 0);
+        $trueFalse = (int) ($distribution['true_false'] ?? 0);
+
+        if (($multipleChoice + $trueFalse) !== $requestedItems) {
+            throw ValidationException::withMessages([
+                'question_type_distribution' => [
+                    sprintf('Question type counts must sum to %d.', $requestedItems),
+                ],
+            ]);
+        }
+
+        return array_merge(
+            array_fill(0, $multipleChoice, 'multiple_choice'),
+            array_fill(0, $trueFalse, 'true_false'),
+        );
+    }
+
+    /**
+     * @param  Collection<int, Document>  $documents
+     */
+    private function hasRequiredDocumentKinds(Collection $documents): bool
+    {
+        $hasSyllabus = $documents->contains(fn (Document $document): bool => $document->kind === DocumentKind::Syllabus);
+        $hasMaterial = $documents->contains(fn (Document $document): bool => $document->kind === DocumentKind::Material);
+
+        return $hasSyllabus && $hasMaterial;
     }
 }

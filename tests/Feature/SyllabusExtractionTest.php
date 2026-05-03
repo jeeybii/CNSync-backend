@@ -30,14 +30,14 @@ test('faculty can extract structured syllabus topics from analyzed syllabus docu
                                             'topic_name' => 'Neural Networks',
                                             'hours' => 6,
                                             'objective' => 'Explain and apply basic ANN models',
-                                            'bloom_level' => 'application',
+                                            'bloom_level' => 'apply',
                                             'confidence' => 0.92,
                                         ],
                                         [
                                             'topic_name' => 'Convolutional Networks',
                                             'hours' => 4,
                                             'objective' => 'Analyze CNN components',
-                                            'bloom_level' => 'analysis',
+                                            'bloom_level' => 'analyze',
                                             'confidence' => 0.88,
                                         ],
                                     ],
@@ -110,7 +110,7 @@ test('faculty can review and edit extracted syllabus topics', function () {
         'topic_name' => 'Old Topic B',
         'hours' => 2,
         'objective' => 'Old objective B',
-        'bloom_level' => 'comprehension',
+        'bloom_level' => 'understand',
     ]);
 
     $this->getJson("/api/projects/{$project->id}/documents/{$document->id}/syllabus-topics", syllabusAuthHeader($user))
@@ -124,14 +124,14 @@ test('faculty can review and edit extracted syllabus topics', function () {
                 'topic_name' => 'Neural Networks',
                 'hours' => 6,
                 'objective' => 'Explain ANN architecture',
-                'bloom_level' => 'application',
+                'bloom_level' => 'apply',
             ],
             [
                 'id' => $topicB->id,
                 'topic_name' => 'CNN Fundamentals',
                 'hours' => 4,
                 'objective' => 'Analyze convolution layers',
-                'bloom_level' => 'analysis',
+                'bloom_level' => 'analyze',
             ],
         ],
     ], syllabusAuthHeader($user))
@@ -140,5 +140,5 @@ test('faculty can review and edit extracted syllabus topics', function () {
         ->assertJsonPath('data.1.topic_name', 'CNN Fundamentals');
 
     expect($topicA->fresh()->hours)->toBe(6.0);
-    expect($topicB->fresh()->bloom_level->value)->toBe('analysis');
+    expect($topicB->fresh()->bloom_level->value)->toBe('analyze');
 });

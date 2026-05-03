@@ -12,6 +12,7 @@ class QuestionItem extends Model
         'question_run_id',
         'topic_name',
         'bloom_level',
+        'question_type',
         'sequence',
         'question_text',
         'options',

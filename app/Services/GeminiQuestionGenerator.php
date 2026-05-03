@@ -3,8 +3,8 @@
 namespace App\Services;
 
 use App\Models\Document;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
 class GeminiQuestionGenerator
@@ -13,7 +13,7 @@ class GeminiQuestionGenerator
      * @param  array<int, array{content:string,page_number:int|null,document_id:int}>  $contexts
      * @return array{question_text:string,options:array<int, string>,answer_key:string,citations:array<int, array<string, mixed>>}
      */
-    public function generateOne(string $topicName, string $bloomLevel, array $contexts): array
+    public function generateOne(string $topicName, string $bloomLevel, string $questionType, array $contexts): array
     {
         $apiKey = (string) config('services.gemini.api_key');
         if (blank($apiKey)) {
@@ -30,13 +30,14 @@ class GeminiQuestionGenerator
             ->implode("\n\n");
 
         $prompt = implode("\n", [
-            'Generate exactly one grounded multiple-choice question as JSON only.',
+            'Generate exactly one grounded objective question as JSON only.',
             'Use only the provided context and avoid external knowledge.',
             sprintf('Topic: %s', $topicName),
             sprintf('Bloom level: %s', $bloomLevel),
+            sprintf('Question type: %s', $questionType),
             'Return JSON object with keys: question_text, options, answer_key.',
-            'options must be an array of 4 strings.',
-            'answer_key must be one of A,B,C,D.',
+            'For multiple_choice: options must have exactly 4 strings and answer_key must be one of A,B,C,D.',
+            'For true_false: options must be exactly ["True","False"] and answer_key must be either True or False.',
             'Context:',
             $contextText,
         ]);
@@ -44,7 +45,7 @@ class GeminiQuestionGenerator
         $baseUrl = rtrim((string) config('services.gemini.base_url'), '/');
         $response = $this->callGeminiWithFallback($baseUrl, $apiKey, $prompt);
         $parsed = $this->parseJsonPayload($response);
-        $validated = $this->validateQuestionPayload($parsed);
+        $validated = $this->validateQuestionPayload($parsed, $questionType);
 
         return [
             'question_text' => $validated['question_text'],
@@ -62,7 +63,7 @@ class GeminiQuestionGenerator
     }
 
     /**
-     * @param  array<int, array{id:string,topic_name:string,bloom_level:string}>  $requests
+     * @param  array<int, array{id:string,topic_name:string,bloom_level:string,question_type:string}>  $requests
      * @param  array<string, array<int, array{content:string,page_number:int|null,document_id:int}>>  $contextsByRequestId
      * @return array<string, array{question_text:string,options:array<int, string>,answer_key:string}>
      */
@@ -83,7 +84,7 @@ class GeminiQuestionGenerator
                 $request['id'],
                 $request['topic_name'],
                 $request['bloom_level'],
-            ))
+            ).sprintf(' | question_type=%s', $request['question_type']))
             ->implode("\n");
 
         $contextText = collect($contextsByRequestId)
@@ -102,13 +103,13 @@ class GeminiQuestionGenerator
             ->implode("\n\n");
 
         $prompt = implode("\n", [
-            'Generate grounded multiple-choice questions as JSON only.',
+            'Generate grounded objective questions as JSON only.',
             'Use only the provided context and avoid external knowledge.',
             'Return JSON object with key "items".',
             'items must be an array where each item has:',
-            'request_id, question_text, options, answer_key.',
-            'options must be exactly 4 strings.',
-            'answer_key must be one of A,B,C,D.',
+            'request_id, question_text, question_type, options, answer_key.',
+            'For multiple_choice: options must have exactly 4 strings and answer_key must be one of A,B,C,D.',
+            'For true_false: options must be exactly ["True","False"] and answer_key must be either True or False.',
             'Generate exactly one item for every request_id listed below.',
             'Requests:',
             $requestSpecs,
@@ -132,7 +133,7 @@ class GeminiQuestionGenerator
             }
 
             try {
-                $validated = $this->validateQuestionPayload($item);
+                $validated = $this->validateQuestionPayload($item, $item['question_type'] ?? null);
             } catch (RuntimeException) {
                 continue;
             }
@@ -255,19 +256,35 @@ class GeminiQuestionGenerator
      * @param  array<string, mixed>  $payload
      * @return array{question_text:string,options:array<int, string>,answer_key:string}
      */
-    private function validateQuestionPayload(array $payload): array
+    private function validateQuestionPayload(array $payload, ?string $requestedType = null): array
     {
         $questionText = $payload['question_text'] ?? null;
         $options = $payload['options'] ?? null;
         $answerKey = $payload['answer_key'] ?? null;
+        $questionType = (string) ($payload['question_type'] ?? $requestedType ?? 'multiple_choice');
 
-        if (! is_string($questionText) || ! is_array($options) || count($options) !== 4 || ! is_string($answerKey)) {
+        if (! is_string($questionText) || ! is_array($options) || ! is_string($answerKey)) {
             throw new RuntimeException('Gemini response failed schema validation.');
         }
 
-        $allowedAnswerKeys = ['A', 'B', 'C', 'D'];
-        if (! in_array($answerKey, $allowedAnswerKeys, true)) {
-            throw new RuntimeException('Gemini answer key must be one of A, B, C, or D.');
+        if ($questionType === 'true_false') {
+            $normalizedOptions = array_values(array_map('strval', $options));
+            if ($normalizedOptions !== ['True', 'False']) {
+                throw new RuntimeException('True/False questions must use options ["True","False"].');
+            }
+
+            if (! in_array($answerKey, ['True', 'False'], true)) {
+                throw new RuntimeException('True/False answer key must be True or False.');
+            }
+        } else {
+            if (count($options) !== 4) {
+                throw new RuntimeException('Multiple-choice questions must include exactly 4 options.');
+            }
+
+            $allowedAnswerKeys = ['A', 'B', 'C', 'D'];
+            if (! in_array($answerKey, $allowedAnswerKeys, true)) {
+                throw new RuntimeException('Gemini answer key must be one of A, B, C, or D.');
+            }
         }
 
         return [

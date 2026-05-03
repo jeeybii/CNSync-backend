@@ -36,7 +36,7 @@ class GeminiBloomDistributionService
 
         $prompt = implode("\n", [
             'Infer an exam Bloom distribution from syllabus topics.',
-            'Return ONLY JSON with numeric keys: knowledge, comprehension, application, analysis.',
+            'Return ONLY JSON with numeric keys: knowledge, understand, apply, analyze, evaluate, create.',
             'Each value must be >= 0. Values do not need to sum to 1.',
             'Heavily use objective verbs and topic depth/hours.',
             'Syllabus topics:',
@@ -128,4 +128,3 @@ class GeminiBloomDistributionService
         return $parsed;
     }
 }
-

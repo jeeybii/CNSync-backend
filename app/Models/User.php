@@ -39,6 +39,16 @@ class User extends Authenticatable
         return $this->hasMany(Project::class);
     }
 
+    public function assessments(): HasMany
+    {
+        return $this->hasMany(Assessment::class);
+    }
+
+    public function decks(): HasMany
+    {
+        return $this->hasMany(Deck::class);
+    }
+
     public function isFaculty(): bool
     {
         return $this->role === UserRole::Faculty;

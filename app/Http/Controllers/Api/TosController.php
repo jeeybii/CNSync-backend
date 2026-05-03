@@ -13,6 +13,7 @@ use App\Services\GeminiBloomDistributionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 
 class TosController extends Controller
@@ -29,6 +30,8 @@ class TosController extends Controller
 
     public function store(Request $request, Project $project): JsonResponse
     {
+        $this->assertRequiredDocumentsUploaded($project);
+
         $validated = $request->validate([
             'total_items' => ['required', 'integer', 'min:1', 'max:500'],
             'topics' => ['required', 'array', 'min:1'],
@@ -40,6 +43,10 @@ class TosController extends Controller
         $totalItems = (int) $validated['total_items'];
         $topics = $validated['topics'];
         $bloomDistributionInput = $validated['bloom_distribution'] ?? [];
+
+        if (array_key_exists('bloom_distribution', $validated)) {
+            $this->validateCustomBloomDistribution($validated['bloom_distribution']);
+        }
 
         $bloomDistribution = $this->normalizeBloomDistribution($bloomDistributionInput);
         $topicWeights = $this->buildTopicWeights($topics);
@@ -60,8 +67,9 @@ class TosController extends Controller
         Request $request,
         Project $project,
         GeminiBloomDistributionService $bloomDistributionService
-    ): JsonResponse
-    {
+    ): JsonResponse {
+        $this->assertRequiredDocumentsUploaded($project);
+
         $validated = $request->validate([
             'total_items' => ['required', 'integer', 'min:1', 'max:500'],
             'syllabus_document_id' => ['nullable', 'integer'],
@@ -70,7 +78,7 @@ class TosController extends Controller
 
         $document = $this->resolveSyllabusDocument($project, $validated['syllabus_document_id'] ?? null);
         $topics = $document->syllabusTopics()
-            ->orderByDesc('hours')
+            ->orderBy('id')
             ->get(['topic_name', 'hours'])
             ->map(fn (SyllabusTopic $topic): array => [
                 'name' => $topic->topic_name,
@@ -86,10 +94,11 @@ class TosController extends Controller
 
         $totalItems = (int) $validated['total_items'];
         if (array_key_exists('bloom_distribution', $validated)) {
+            $this->validateCustomBloomDistribution($validated['bloom_distribution']);
             $bloomDistribution = $this->normalizeBloomDistribution($validated['bloom_distribution']);
         } else {
             $topicsForBloomInference = $document->syllabusTopics()
-                ->orderByDesc('hours')
+                ->orderBy('id')
                 ->get(['topic_name', 'hours', 'objective', 'bloom_level'])
                 ->map(fn (SyllabusTopic $topic): array => [
                     'name' => $topic->topic_name,
@@ -144,6 +153,45 @@ class TosController extends Controller
         }
 
         return array_map(static fn (float $value): float => $value / $sum, $resolved);
+    }
+
+    /**
+     * @param  array<string, mixed>  $bloomDistributionInput
+     */
+    private function validateCustomBloomDistribution(array $bloomDistributionInput): void
+    {
+        $levels = BloomLevel::values();
+        $missingLevels = array_diff($levels, array_keys($bloomDistributionInput));
+        if (! empty($missingLevels)) {
+            throw ValidationException::withMessages([
+                'bloom_distribution' => ['Bloom distribution must include all Bloom categories.'],
+            ]);
+        }
+
+        $sum = 0.0;
+        foreach ($levels as $level) {
+            $value = $bloomDistributionInput[$level] ?? null;
+            if (! is_numeric($value)) {
+                throw ValidationException::withMessages([
+                    "bloom_distribution.$level" => ['Bloom value must be numeric.'],
+                ]);
+            }
+
+            $normalizedValue = (float) $value;
+            if ($normalizedValue < 0 || $normalizedValue > 100) {
+                throw ValidationException::withMessages([
+                    "bloom_distribution.$level" => ['Bloom value must be between 0 and 100.'],
+                ]);
+            }
+
+            $sum += $normalizedValue;
+        }
+
+        if (abs($sum - 100.0) > 0.01) {
+            throw ValidationException::withMessages([
+                'bloom_distribution' => ['Bloom distribution must sum to exactly 100.'],
+            ]);
+        }
     }
 
     /**
@@ -269,5 +317,30 @@ class TosController extends Controller
         }
 
         return $query->latest('id')->firstOrFail();
+    }
+
+    private function assertRequiredDocumentsUploaded(Project $project): void
+    {
+        $syllabusCount = Document::query()
+            ->where('project_id', $project->id)
+            ->where('kind', DocumentKind::Syllabus)
+            ->count();
+
+        if ($syllabusCount !== 1) {
+            throw ValidationException::withMessages([
+                'syllabus' => ['Exactly one syllabus document is required before generating TOS.'],
+            ]);
+        }
+
+        $materialCount = Document::query()
+            ->where('project_id', $project->id)
+            ->where('kind', DocumentKind::Material)
+            ->count();
+
+        if ($materialCount < 1) {
+            throw ValidationException::withMessages([
+                'materials' => ['Upload at least one learning material before generating TOS.'],
+            ]);
+        }
     }
 }

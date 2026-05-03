@@ -27,6 +27,8 @@ class DocumentTextExtractor
             'application/pdf' => $this->extractPdfText($disk, $document->path),
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => $this->extractDocxText($disk, $document->path),
             'application/msword' => throw new RuntimeException('Legacy .doc parsing is not supported yet. Please upload DOCX or PDF.'),
+            'text/plain' => $this->extractPlainText($disk, $document->path),
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation' => $this->extractPptxText($disk, $document->path),
             default => throw new RuntimeException(sprintf(
                 'Unsupported document mime type [%s].',
                 $mimeType,
@@ -46,7 +48,12 @@ class DocumentTextExtractor
                 'metadata' => [
                     'source' => 'document_text_extractor',
                     'mime_type' => $mimeType,
-                    'parser' => $mimeType === 'application/pdf' ? 'pdf' : 'docx',
+                    'parser' => match ($mimeType) {
+                        'application/pdf' => 'pdf',
+                        'text/plain' => 'txt',
+                        'application/vnd.openxmlformats-officedocument.presentationml.presentation' => 'pptx',
+                        default => 'docx',
+                    },
                 ],
             ],
             $chunks,
@@ -99,6 +106,58 @@ class DocumentTextExtractor
         $normalized = trim(preg_replace('/\s+/', ' ', $output) ?? '');
 
         return $normalized === '' ? null : $normalized;
+    }
+
+    private function extractPlainText(Filesystem $disk, string $path): string
+    {
+        $raw = $disk->get($path);
+
+        return trim(preg_replace('/\s+/', ' ', (string) $raw) ?? '');
+    }
+
+    private function extractPptxText(Filesystem $disk, string $path): string
+    {
+        $binary = $disk->get($path);
+        $tmpFile = tempnam(sys_get_temp_dir(), 'cnsync-pptx-');
+
+        if ($tmpFile === false) {
+            throw new RuntimeException('Unable to create temporary file for PPTX parsing.');
+        }
+
+        file_put_contents($tmpFile, $binary);
+
+        try {
+            $zip = new ZipArchive;
+            if ($zip->open($tmpFile) !== true) {
+                throw new RuntimeException('Unable to open PPTX archive.');
+            }
+
+            $slideNames = [];
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                $name = $zip->getNameIndex($i);
+                if (is_string($name) && preg_match('#^ppt/slides/slide\d+\.xml$#', $name)) {
+                    $slideNames[] = $name;
+                }
+            }
+
+            sort($slideNames);
+            $parts = [];
+            foreach ($slideNames as $name) {
+                $xml = $zip->getFromName($name);
+                if (! is_string($xml) || $xml === '') {
+                    continue;
+                }
+
+                $xml = str_replace(['</a:p>', '</a:br>', '</p:sld>', '</a:t>'], ["\n", "\n", "\n", ' '], $xml);
+                $parts[] = strip_tags($xml);
+            }
+
+            $zip->close();
+
+            return trim(preg_replace('/\s+/', ' ', implode(' ', $parts)) ?? '');
+        } finally {
+            @unlink($tmpFile);
+        }
     }
 
     private function extractDocxText(Filesystem $disk, string $path): string

@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\DocumentKind;
 use App\Enums\DocumentStatus;
 use App\Models\Document;
 use App\Models\Project;
@@ -121,4 +122,80 @@ test('document delete removes file and row', function () {
 
     expect(Document::query()->whereKey($docId)->exists())->toBeFalse();
     Storage::disk('local')->assertMissing($path);
+});
+
+test('project accepts only one syllabus upload', function () {
+    Storage::fake('local');
+    bindFakeDocumentExtractor();
+
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+
+    $this->post("/api/projects/{$project->id}/documents", [
+        'kind' => 'syllabus',
+        'file' => UploadedFile::fake()->create('syllabus-1.pdf', 200, 'application/pdf'),
+    ], facultyAuthHeader($user))->assertCreated();
+
+    $this->postJson("/api/projects/{$project->id}/documents", [
+        'kind' => 'syllabus',
+        'file' => UploadedFile::fake()->create('syllabus-2.pdf', 200, 'application/pdf'),
+    ], facultyAuthHeader($user))
+        ->assertUnprocessable()
+        ->assertJsonPath('message', 'Only one syllabus document is allowed per project.');
+});
+
+test('project accepts at most ten learning materials', function () {
+    Storage::fake('local');
+    bindFakeDocumentExtractor();
+
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    Document::factory()->count(10)->for($project)->create(['kind' => DocumentKind::Material]);
+
+    $this->postJson("/api/projects/{$project->id}/documents", [
+        'kind' => 'material',
+        'file' => UploadedFile::fake()->create('module-11.pdf', 200, 'application/pdf'),
+    ], facultyAuthHeader($user))
+        ->assertUnprocessable()
+        ->assertJsonPath('message', 'A project can have at most 10 learning material documents.');
+});
+
+test('bundle upload accepts one syllabus and multiple materials in one request', function () {
+    Storage::fake('local');
+    bindFakeDocumentExtractor();
+
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+
+    $response = $this->post("/api/projects/{$project->id}/documents/bundle", [
+        'syllabus' => UploadedFile::fake()->create('syllabus.pdf', 200, 'application/pdf'),
+        'materials' => [
+            UploadedFile::fake()->create('material-1.pdf', 200, 'application/pdf'),
+            UploadedFile::fake()->create('material-2.pdf', 200, 'application/pdf'),
+        ],
+    ], facultyAuthHeader($user));
+
+    $response->assertCreated()
+        ->assertJsonPath('data.syllabus.kind', 'syllabus')
+        ->assertJsonCount(2, 'data.materials');
+
+    expect(Document::query()->where('project_id', $project->id)->count())->toBe(3);
+});
+
+test('bundle upload validates limits and uniqueness constraints', function () {
+    Storage::fake('local');
+    bindFakeDocumentExtractor();
+
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Syllabus]);
+
+    $this->post("/api/projects/{$project->id}/documents/bundle", [
+        'syllabus' => UploadedFile::fake()->create('new-syllabus.pdf', 200, 'application/pdf'),
+        'materials' => [
+            UploadedFile::fake()->create('material-1.pdf', 200, 'application/pdf'),
+        ],
+    ], facultyAuthHeader($user))
+        ->assertUnprocessable()
+        ->assertJsonPath('message', 'Only one syllabus document is allowed per project.');
 });

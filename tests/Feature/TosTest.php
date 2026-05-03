@@ -17,6 +17,8 @@ function facultyTosAuthHeader(User $user): array
 test('faculty can create deterministic tos run and allocations sum to requested items', function () {
     $user = User::factory()->create();
     $project = Project::factory()->for($user)->create();
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Syllabus, 'status' => DocumentStatus::TosReady]);
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Material, 'status' => DocumentStatus::Analyzed]);
 
     $response = $this->postJson("/api/projects/{$project->id}/tos-runs", [
         'total_items' => 20,
@@ -26,15 +28,17 @@ test('faculty can create deterministic tos run and allocations sum to requested 
         ],
         'bloom_distribution' => [
             'knowledge' => 20,
-            'comprehension' => 30,
-            'application' => 30,
-            'analysis' => 20,
+            'understand' => 25,
+            'apply' => 20,
+            'analyze' => 15,
+            'evaluate' => 10,
+            'create' => 10,
         ],
     ], facultyTosAuthHeader($user));
 
     $response->assertCreated()
         ->assertJsonPath('data.total_items', 20)
-        ->assertJsonCount(8, 'data.allocations');
+        ->assertJsonCount(12, 'data.allocations');
 
     $allocations = collect($response->json('data.allocations'));
 
@@ -51,6 +55,8 @@ test('tos run show and index are scoped to owner project', function () {
     $owner = User::factory()->create();
     $other = User::factory()->create();
     $project = Project::factory()->for($owner)->create();
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Syllabus, 'status' => DocumentStatus::TosReady]);
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Material, 'status' => DocumentStatus::Analyzed]);
 
     $created = $this->postJson("/api/projects/{$project->id}/tos-runs", [
         'total_items' => 10,
@@ -79,6 +85,8 @@ test('tos run show and index are scoped to owner project', function () {
 test('tos run request validates required fields', function () {
     $user = User::factory()->create();
     $project = Project::factory()->for($user)->create();
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Syllabus, 'status' => DocumentStatus::TosReady]);
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Material, 'status' => DocumentStatus::Analyzed]);
 
     $this->postJson("/api/projects/{$project->id}/tos-runs", [
         'total_items' => 0,
@@ -97,9 +105,11 @@ test('faculty can create tos run from extracted syllabus topics', function () {
                     'parts' => [[
                         'text' => json_encode([
                             'knowledge' => 0.1,
-                            'comprehension' => 0.2,
-                            'application' => 0.5,
-                            'analysis' => 0.2,
+                            'understand' => 0.2,
+                            'apply' => 0.4,
+                            'analyze' => 0.1,
+                            'evaluate' => 0.1,
+                            'create' => 0.1,
                         ], JSON_THROW_ON_ERROR),
                     ]],
                 ],
@@ -113,6 +123,10 @@ test('faculty can create tos run from extracted syllabus topics', function () {
     $document = Document::factory()->for($project)->create([
         'kind' => DocumentKind::Syllabus,
         'status' => DocumentStatus::TosReady,
+    ]);
+    Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Material,
+        'status' => DocumentStatus::Analyzed,
     ]);
 
     SyllabusTopic::query()->create([
@@ -138,5 +152,5 @@ test('faculty can create tos run from extracted syllabus topics', function () {
         ->assertCreated()
         ->assertJsonPath('data.total_items', 10)
         ->assertJsonPath('data.topics.0.name', 'Topic A')
-        ->assertJsonPath('data.bloom_distribution.application', 0.5);
+        ->assertJsonPath('data.bloom_distribution.apply', 0.4);
 });
