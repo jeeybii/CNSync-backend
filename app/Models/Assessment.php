@@ -14,6 +14,8 @@ class Assessment extends Model
         'title',
         'exam_type',
         'number_of_items',
+        'number_of_sets',
+        'set_b_sequence',
         'tos',
     ];
 
@@ -21,6 +23,8 @@ class Assessment extends Model
     {
         return [
             'number_of_items' => 'integer',
+            'number_of_sets' => 'integer',
+            'set_b_sequence' => 'array',
             'tos' => 'array',
         ];
     }

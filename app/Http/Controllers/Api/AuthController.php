@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Enums\UserRole;
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -64,7 +65,17 @@ class AuthController extends Controller
             ], 422);
         }
 
+        $user->update(['last_login_at' => now()]);
+
         $token = $user->createToken('auth-token')->plainTextToken;
+
+        ActivityLog::record(
+            $user->id,
+            'login',
+            sprintf('%s %s logged in', $user->first_name, $user->last_name),
+            ['role' => $user->role->value],
+            $request->ip(),
+        );
 
         return response()->json([
             'user' => $user,
@@ -80,7 +91,16 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
-        $request->user()->currentAccessToken()->delete();
+        $user = $request->user();
+        $user->currentAccessToken()->delete();
+
+        ActivityLog::record(
+            $user->id,
+            'logout',
+            sprintf('%s %s logged out', $user->first_name, $user->last_name),
+            null,
+            $request->ip(),
+        );
 
         return response()->json([
             'message' => 'Logged out successfully.',

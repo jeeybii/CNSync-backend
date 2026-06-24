@@ -4,12 +4,12 @@ namespace App\Enums;
 
 enum BloomLevel: string
 {
-    case Knowledge = 'knowledge';
-    case Understand = 'understand';
-    case Apply = 'apply';
-    case Analyze = 'analyze';
-    case Evaluate = 'evaluate';
-    case Create = 'create';
+    case Remembering = 'remembering';
+    case Understanding = 'understanding';
+    case Applying = 'applying';
+    case Analyzing = 'analyzing';
+    case Evaluating = 'evaluating';
+    case Creating = 'creating';
 
     /**
      * @return array<string>

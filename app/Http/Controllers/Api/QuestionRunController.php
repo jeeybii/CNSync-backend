@@ -4,12 +4,16 @@ namespace App\Http\Controllers\Api;
 
 use App\Enums\DocumentKind;
 use App\Enums\DocumentStatus;
+use App\Enums\QuestionType;
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
 use App\Models\Document;
 use App\Models\Project;
 use App\Models\QuestionRun;
+use App\Models\SyllabusTopic;
 use App\Models\TosRun;
 use App\Services\GeminiQuestionGenerator;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -37,8 +41,11 @@ class QuestionRunController extends Controller
         $validated = $request->validate([
             'tos_run_id' => ['nullable', 'integer'],
             'question_type_distribution' => ['sometimes', 'array'],
-            'question_type_distribution.multiple_choice' => ['required_with:question_type_distribution', 'integer', 'min:0'],
-            'question_type_distribution.true_false' => ['required_with:question_type_distribution', 'integer', 'min:0'],
+            'question_type_distribution.multiple_choice' => ['sometimes', 'integer', 'min:0'],
+            'question_type_distribution.true_false' => ['sometimes', 'integer', 'min:0'],
+            'question_type_distribution.identification' => ['sometimes', 'integer', 'min:0'],
+            'question_type_distribution.essay' => ['sometimes', 'integer', 'min:0'],
+            'question_type_distribution.matching_type' => ['sometimes', 'integer', 'min:0'],
         ]);
 
         $tosRun = $this->resolveTosRun($project, $validated['tos_run_id'] ?? null);
@@ -56,6 +63,20 @@ class QuestionRunController extends Controller
             ], 422);
         }
 
+        // Only pull context from learning materials — the syllabus is used for TOS structure only,
+        // not as a question source (prevents "What is the course title?" type questions).
+        $materialDocuments = $documents
+            ->filter(fn (Document $document): bool => $document->kind === DocumentKind::Material)
+            ->values()
+            ->all();
+
+        // Pre-load syllabus topics so we can supplement context for any topic not
+        // covered in the learning materials (used as a subject-scope guide, not a source).
+        $syllabusTopics = SyllabusTopic::query()
+            ->where('project_id', $project->id)
+            ->get(['topic_name', 'hours', 'objective'])
+            ->keyBy('topic_name');
+
         $questionRun = $project->questionRuns()->create([
             'tos_run_id' => $tosRun->id,
             'requested_items' => $requestedItems,
@@ -72,7 +93,28 @@ class QuestionRunController extends Controller
             $questionTypeIndex = 0;
 
             foreach ($tosRun->allocations as $allocation) {
-                $contexts = $generator->retrieveContext($allocation->topic_name, $documents->all());
+                $contexts = $generator->retrieveContext($allocation->topic_name, $materialDocuments);
+
+                // When no learning material explicitly mentions this topic, supplement with the
+                // syllabus topic objective as a subject-scope guide so the AI knows what the
+                // topic is about — without quoting from the syllabus directly.
+                if (! $generator->hasTopicMatch($allocation->topic_name, $materialDocuments)) {
+                    $syllabusTopic = $syllabusTopics->get($allocation->topic_name);
+                    if ($syllabusTopic) {
+                        $guideText = sprintf(
+                            '[TOPIC GUIDE - use only to understand the subject scope, do NOT quote from this] Topic: %s | Scope: %s',
+                            $syllabusTopic->topic_name,
+                            $syllabusTopic->objective ?? 'No detailed scope provided — generate a standard educational question for this topic area.',
+                        );
+                        // Prepend the guide so the AI can orient the question to the right topic,
+                        // then fallback material content follows for actual substance.
+                        array_unshift($contexts, [
+                            'document_id' => 0,
+                            'content' => $guideText,
+                            'page_number' => null,
+                        ]);
+                    }
+                }
                 for ($i = 0; $i < $allocation->item_count; $i++) {
                     $requestId = sprintf(
                         'alloc-%d-item-%d',
@@ -142,6 +184,28 @@ class QuestionRunController extends Controller
                     'failed_reason' => null,
                 ]);
             });
+
+            ActivityLog::record(
+                $request->user()->id,
+                'exam_generated',
+                sprintf('Generated %d exam questions for project #%d', count($createdItems), $project->id),
+                ['project_id' => $project->id, 'question_run_id' => $questionRun->id, 'item_count' => count($createdItems)],
+                $request->ip(),
+            );
+        } catch (RequestException $exception) {
+            $questionRun->update([
+                'status' => 'failed',
+                'failed_reason' => $exception->getMessage(),
+            ]);
+
+            if ($exception->response?->status() === 503) {
+                return response()->json([
+                    'message' => 'The AI is currently experiencing high demand. Please try again in a moment.',
+                    'error_code' => 'ai_high_demand',
+                ], 503);
+            }
+
+            throw $exception;
         } catch (\Throwable $exception) {
             $questionRun->update([
                 'status' => 'failed',
@@ -187,13 +251,19 @@ class QuestionRunController extends Controller
     private function resolveQuestionTypePlan(int $requestedItems, ?array $distribution): array
     {
         if ($distribution === null) {
-            return array_fill(0, $requestedItems, 'multiple_choice');
+            return array_fill(0, $requestedItems, QuestionType::MultipleChoice->value);
         }
 
-        $multipleChoice = (int) ($distribution['multiple_choice'] ?? 0);
-        $trueFalse = (int) ($distribution['true_false'] ?? 0);
+        $plan = [];
+        $total = 0;
 
-        if (($multipleChoice + $trueFalse) !== $requestedItems) {
+        foreach (QuestionType::values() as $type) {
+            $count = (int) ($distribution[$type] ?? 0);
+            $total += $count;
+            $plan = array_merge($plan, array_fill(0, $count, $type));
+        }
+
+        if ($total !== $requestedItems) {
             throw ValidationException::withMessages([
                 'question_type_distribution' => [
                     sprintf('Question type counts must sum to %d.', $requestedItems),
@@ -201,10 +271,7 @@ class QuestionRunController extends Controller
             ]);
         }
 
-        return array_merge(
-            array_fill(0, $multipleChoice, 'multiple_choice'),
-            array_fill(0, $trueFalse, 'true_false'),
-        );
+        return $plan;
     }
 
     /**

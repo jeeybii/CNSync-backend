@@ -9,10 +9,10 @@ use App\Models\Document;
 use App\Models\Project;
 use App\Models\SyllabusTopic;
 use App\Models\TosRun;
-use App\Services\GeminiBloomDistributionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 
@@ -37,24 +37,20 @@ class TosController extends Controller
             'topics' => ['required', 'array', 'min:1'],
             'topics.*.name' => ['required', 'string', 'max:255'],
             'topics.*.hours' => ['required', 'numeric', 'gt:0'],
-            'bloom_distribution' => ['sometimes', 'array'],
+            'bloom_levels' => ['required', 'array', 'size:3'],
+            'bloom_levels.*' => ['required', 'string', Rule::in(BloomLevel::values())],
         ]);
 
-        $totalItems = (int) $validated['total_items'];
-        $topics = $validated['topics'];
-        $bloomDistributionInput = $validated['bloom_distribution'] ?? [];
+        $this->validateUniqueBloomLevels($validated['bloom_levels']);
 
-        if (array_key_exists('bloom_distribution', $validated)) {
-            $this->validateCustomBloomDistribution($validated['bloom_distribution']);
-        }
+        $bloomDistribution = $this->buildEqualDistribution($validated['bloom_levels']);
+        $topicWeights = $this->buildTopicWeights($validated['topics']);
+        $topicItemCounts = $this->allocateByLargestRemainder($topicWeights, (int) $validated['total_items']);
 
-        $bloomDistribution = $this->normalizeBloomDistribution($bloomDistributionInput);
-        $topicWeights = $this->buildTopicWeights($topics);
-        $topicItemCounts = $this->allocateByLargestRemainder($topicWeights, $totalItems);
         $tosRun = $this->createRunFromTopics(
             $project,
-            $totalItems,
-            $topics,
+            (int) $validated['total_items'],
+            $validated['topics'],
             $bloomDistribution,
             $topicWeights,
             $topicItemCounts,
@@ -63,18 +59,18 @@ class TosController extends Controller
         return response()->json(['data' => $tosRun], 201);
     }
 
-    public function storeFromSyllabus(
-        Request $request,
-        Project $project,
-        GeminiBloomDistributionService $bloomDistributionService
-    ): JsonResponse {
+    public function storeFromSyllabus(Request $request, Project $project): JsonResponse
+    {
         $this->assertRequiredDocumentsUploaded($project);
 
         $validated = $request->validate([
             'total_items' => ['required', 'integer', 'min:1', 'max:500'],
             'syllabus_document_id' => ['nullable', 'integer'],
-            'bloom_distribution' => ['sometimes', 'array'],
+            'bloom_levels' => ['required', 'array', 'size:3'],
+            'bloom_levels.*' => ['required', 'string', Rule::in(BloomLevel::values())],
         ]);
+
+        $this->validateUniqueBloomLevels($validated['bloom_levels']);
 
         $document = $this->resolveSyllabusDocument($project, $validated['syllabus_document_id'] ?? null);
         $topics = $document->syllabusTopics()
@@ -92,30 +88,13 @@ class TosController extends Controller
             ], 422);
         }
 
-        $totalItems = (int) $validated['total_items'];
-        if (array_key_exists('bloom_distribution', $validated)) {
-            $this->validateCustomBloomDistribution($validated['bloom_distribution']);
-            $bloomDistribution = $this->normalizeBloomDistribution($validated['bloom_distribution']);
-        } else {
-            $topicsForBloomInference = $document->syllabusTopics()
-                ->orderBy('id')
-                ->get(['topic_name', 'hours', 'objective', 'bloom_level'])
-                ->map(fn (SyllabusTopic $topic): array => [
-                    'name' => $topic->topic_name,
-                    'hours' => $topic->hours,
-                    'objective' => $topic->objective,
-                    'bloom_level' => $topic->bloom_level,
-                ])
-                ->all();
-
-            $bloomDistribution = $bloomDistributionService->infer($topicsForBloomInference);
-        }
+        $bloomDistribution = $this->buildEqualDistribution($validated['bloom_levels']);
         $topicWeights = $this->buildTopicWeights($topics);
-        $topicItemCounts = $this->allocateByLargestRemainder($topicWeights, $totalItems);
+        $topicItemCounts = $this->allocateByLargestRemainder($topicWeights, (int) $validated['total_items']);
 
         $tosRun = $this->createRunFromTopics(
             $project,
-            $totalItems,
+            (int) $validated['total_items'],
             $topics,
             $bloomDistribution,
             $topicWeights,
@@ -135,61 +114,26 @@ class TosController extends Controller
     }
 
     /**
-     * @param  array<string, mixed>  $bloomDistributionInput
+     * Builds an equal-weight distribution from exactly 3 selected Bloom levels.
+     *
+     * @param  array<int, string>  $levels
      * @return array<string, float>
      */
-    private function normalizeBloomDistribution(array $bloomDistributionInput): array
+    private function buildEqualDistribution(array $levels): array
     {
-        $levels = BloomLevel::values();
+        $weight = 1.0 / count($levels);
 
-        $resolved = [];
-        foreach ($levels as $level) {
-            $resolved[$level] = (float) ($bloomDistributionInput[$level] ?? 1.0);
-        }
-
-        $sum = array_sum($resolved);
-        if ($sum <= 0) {
-            throw new InvalidArgumentException('Bloom distribution must have a positive total weight.');
-        }
-
-        return array_map(static fn (float $value): float => $value / $sum, $resolved);
+        return array_fill_keys($levels, $weight);
     }
 
     /**
-     * @param  array<string, mixed>  $bloomDistributionInput
+     * @param  array<int, string>  $levels
      */
-    private function validateCustomBloomDistribution(array $bloomDistributionInput): void
+    private function validateUniqueBloomLevels(array $levels): void
     {
-        $levels = BloomLevel::values();
-        $missingLevels = array_diff($levels, array_keys($bloomDistributionInput));
-        if (! empty($missingLevels)) {
+        if (count($levels) !== count(array_unique($levels))) {
             throw ValidationException::withMessages([
-                'bloom_distribution' => ['Bloom distribution must include all Bloom categories.'],
-            ]);
-        }
-
-        $sum = 0.0;
-        foreach ($levels as $level) {
-            $value = $bloomDistributionInput[$level] ?? null;
-            if (! is_numeric($value)) {
-                throw ValidationException::withMessages([
-                    "bloom_distribution.$level" => ['Bloom value must be numeric.'],
-                ]);
-            }
-
-            $normalizedValue = (float) $value;
-            if ($normalizedValue < 0 || $normalizedValue > 100) {
-                throw ValidationException::withMessages([
-                    "bloom_distribution.$level" => ['Bloom value must be between 0 and 100.'],
-                ]);
-            }
-
-            $sum += $normalizedValue;
-        }
-
-        if (abs($sum - 100.0) > 0.01) {
-            throw ValidationException::withMessages([
-                'bloom_distribution' => ['Bloom distribution must sum to exactly 100.'],
+                'bloom_levels' => ['Each cognitive level must be selected only once.'],
             ]);
         }
     }

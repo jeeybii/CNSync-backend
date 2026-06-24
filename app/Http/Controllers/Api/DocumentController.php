@@ -7,6 +7,7 @@ use App\Enums\DocumentKind;
 use App\Enums\DocumentStatus;
 use App\Http\Controllers\Controller;
 use App\Jobs\ProcessDocumentJob;
+use App\Models\ActivityLog;
 use App\Models\Document;
 use App\Models\Project;
 use App\Models\SyllabusTopic;
@@ -70,6 +71,14 @@ class DocumentController extends Controller
         $materialDocuments = collect($validated['materials'])
             ->map(fn ($file) => $this->createDocument($project, $file, DocumentKind::Material)->fresh())
             ->values();
+
+        ActivityLog::record(
+            $request->user()->id,
+            'upload',
+            sprintf('Uploaded syllabus + %d material(s) for project #%d', $materialDocuments->count(), $project->id),
+            ['project_id' => $project->id, 'syllabus_id' => $syllabusDocument->id, 'material_count' => $materialDocuments->count()],
+            $request->ip(),
+        );
 
         return response()->json([
             'data' => [

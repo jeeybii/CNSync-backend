@@ -4,8 +4,8 @@ namespace App\Services;
 
 use App\Enums\BloomLevel;
 use App\Models\Document;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
 class SyllabusExtractionService
@@ -39,6 +39,7 @@ class SyllabusExtractionService
             'Return JSON object with key "topics".',
             'topics must be an array of objects with: topic_name, hours, objective, bloom_level, confidence.',
             'hours must be numeric and positive.',
+            'bloom_level must be one of the Updated Bloom\'s Taxonomy levels: remembering, understanding, applying, analyzing, evaluating, creating.',
             'confidence must be 0 to 1.',
             'Do not include markdown, only JSON.',
             'Syllabus content:',
