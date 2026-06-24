@@ -24,7 +24,7 @@ class QuestionItemController extends Controller
             'question_type' => ['required', 'string', Rule::in(QuestionType::values())],
             'question_text' => ['required', 'string'],
             'options' => ['present'],
-            'answer_key' => ['required', 'string', 'max:1000'],
+            'answer_key' => ['required', 'string', 'max:10000'],
             'citations' => ['nullable', 'array'],
         ]);
 
