@@ -13,6 +13,7 @@ use App\Models\QuestionRun;
 use App\Models\SyllabusTopic;
 use App\Models\TosRun;
 use App\Services\GeminiQuestionGenerator;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -192,6 +193,17 @@ class QuestionRunController extends Controller
                 ['project_id' => $project->id, 'question_run_id' => $questionRun->id, 'item_count' => count($createdItems)],
                 $request->ip(),
             );
+        } catch (ConnectionException $exception) {
+            // Gemini did not respond at all (timeout / network unreachable).
+            $questionRun->update([
+                'status' => 'failed',
+                'failed_reason' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'The AI took too long to respond. Please try again.',
+                'error_code' => 'ai_timeout',
+            ], 503);
         } catch (RequestException $exception) {
             $questionRun->update([
                 'status' => 'failed',

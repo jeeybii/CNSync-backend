@@ -257,8 +257,8 @@ class GeminiQuestionGenerator
             $url = sprintf('%s/v1beta/models/%s:generateContent?key=%s', $baseUrl, $model, $apiKey);
 
             for ($attempt = 1; $attempt <= $retries; $attempt++) {
-                $response = Http::timeout(30)
-                    ->connectTimeout(10)
+                $response = Http::timeout((int) config('services.gemini.timeout', 120))
+                    ->connectTimeout(15)
                     ->post($url, [
                         'contents' => [
                             [

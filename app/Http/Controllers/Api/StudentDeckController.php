@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\StudentDeck;
 use App\Services\StudentDeckGeneratorService;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -84,6 +85,11 @@ class StudentDeckController extends Controller
                 (int) $validated['number_of_items'],
                 $validated['question_type_distribution'] ?? null,
             );
+        } catch (ConnectionException $e) {
+            return response()->json([
+                'message' => 'The AI took too long to respond. Please try again.',
+                'error_code' => 'ai_timeout',
+            ], 503);
         } catch (RequestException $e) {
             if ($e->response?->status() === 503) {
                 return response()->json([

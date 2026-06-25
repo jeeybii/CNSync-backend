@@ -41,6 +41,7 @@ return [
         'fallback_model' => env('GEMINI_FALLBACK_MODEL', 'gemini-2.5-flash-lite'),
         'retries' => (int) env('GEMINI_RETRIES', 5),
         'retry_sleep_ms' => (int) env('GEMINI_RETRY_SLEEP_MS', 1500),
+        'timeout' => (int) env('GEMINI_TIMEOUT', 900),
         'base_url' => env('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com'),
     ],
 

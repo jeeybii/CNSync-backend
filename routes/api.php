@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\Admin\AdminUserController;
 use App\Http\Controllers\Api\AssessmentController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DocumentController;
+use App\Http\Controllers\Api\PdfController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\QuestionItemController;
 use App\Http\Controllers\Api\QuestionRunController;
@@ -25,6 +26,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 });
 
 Route::middleware(['auth:sanctum', 'faculty'])->group(function (): void {
+    Route::post('pdf', [PdfController::class, 'generate']);
     Route::get('assessments', [AssessmentController::class, 'index']);
     Route::post('assessments', [AssessmentController::class, 'store']);
     Route::get('assessments/{assessment}', [AssessmentController::class, 'show']);
