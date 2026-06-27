@@ -242,12 +242,18 @@ class AssessmentController extends Controller
             }
         }
 
-        // Collect raw weights before rounding so we can apply largest-remainder normalisation
+        // Collect raw weights. When only a subset of topics have items (e.g. 5
+        // items across 13 syllabus topics), the active topics' weights only sum
+        // to a fraction of 100. Re-normalise them relative to each other so
+        // the displayed weight column sums to 100% among shown topics.
         $rawWeights = $orderedTopicNames->map(
             fn (string $name): float => (float) $allocationsByTopic->get($name)->first()->topic_weight * 100
         )->values()->toArray();
 
-        $normalizedWeights = $this->largestRemainderRound($rawWeights, 100);
+        $activeSum = array_sum($rawWeights) ?: 100.0;
+        $rescaled = array_map(static fn (float $w): float => ($w / $activeSum) * 100, $rawWeights);
+
+        $normalizedWeights = $this->largestRemainderRound($rescaled, 100);
 
         $topicRows = $orderedTopicNames->values()->map(function (string $topicName, int $idx) use ($allocationsByTopic, $bloomLevels, $items, $positionOf, $normalizedWeights): array {
             $firstAlloc = $allocationsByTopic->get($topicName)->first();

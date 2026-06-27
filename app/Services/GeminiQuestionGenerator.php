@@ -213,14 +213,15 @@ class GeminiQuestionGenerator
     private function sourceRestrictionRules(): array
     {
         return [
-            'Source restriction: Use ONLY the provided learning material context below.',
+            'Primary source: use the provided learning material context below.',
             'NEVER ask about course titles, course codes, instructor names, course policies, grading systems, or any administrative/syllabus metadata.',
-            'Questions must test subject-matter knowledge found in the learning materials.',
+            'If the context is sufficient, base questions strictly on it.',
+            'If the context is insufficient for the required question type or Bloom level, supplement with',
+            '  your subject-matter knowledge about the topic to produce a valid, educationally sound question.',
+            '  Do NOT fail — always generate a complete, properly formatted question.',
             'Some context chunks may be prefixed with [TOPIC GUIDE]. These are syllabus topic descriptions, NOT learning material.',
             '  - Use [TOPIC GUIDE] chunks only to understand what subject area the question must cover.',
             '  - Do NOT quote or reference anything from a [TOPIC GUIDE] chunk directly in the question.',
-            '  - If only [TOPIC GUIDE] context is available, generate a plausible educational question that a',
-            '    student studying this topic would need to know — based on the topic name and scope, not on the guide text.',
         ];
     }
 
@@ -237,8 +238,11 @@ class GeminiQuestionGenerator
             '- true_false: options = ["True","False"]; answer_key = "True" or "False".',
             '- identification: options = [] (empty array); answer_key = the exact expected answer text.',
             '- essay: options = [] (empty array); answer_key = model answer or scoring criteria.',
-            '- matching_type: options = {"column_a": [...], "column_b": [...]} with 3–5 equal-length string arrays;',
+            '- matching_type: options = {"column_a": [...], "column_b": [...]} with 2–5 equal-length string arrays;',
             '  answer_key = comma-separated pairs like "1-A,2-C,3-B" mapping 1-indexed column_a to column_b letter.',
+            '  IMPORTANT for matching_type: if the provided context does not contain enough distinct concepts',
+            '  to form pairs, supplement with your own subject-matter knowledge about the topic to complete',
+            '  the pairs. Never return fewer than 2 pairs — use topic knowledge to fill gaps.',
         ];
     }
 
@@ -413,8 +417,8 @@ class GeminiQuestionGenerator
             throw new RuntimeException('Matching type column_a and column_b must be equal-length arrays.');
         }
         $count = count($colA);
-        if ($count < 3 || $count > 10) {
-            throw new RuntimeException('Matching type must have between 3 and 10 pairs.');
+        if ($count < 2 || $count > 10) {
+            throw new RuntimeException('Matching type must have between 2 and 10 pairs.');
         }
         if (blank($answerKey)) {
             throw new RuntimeException('Matching type answer key must not be empty.');

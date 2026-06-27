@@ -223,8 +223,8 @@ class QuestionItemController extends Controller
         }
 
         $count = count($colA);
-        if ($count < 3 || $count > 10 || count($colB) !== $count) {
-            throw ValidationException::withMessages(['options' => ['column_a and column_b must have equal length between 3 and 10.']]);
+        if ($count < 2 || $count > 10 || count($colB) !== $count) {
+            throw ValidationException::withMessages(['options' => ['column_a and column_b must have equal length between 2 and 10.']]);
         }
 
         foreach ($colA as $i => $item) {
