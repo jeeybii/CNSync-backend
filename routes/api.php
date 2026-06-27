@@ -27,6 +27,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
 Route::middleware(['auth:sanctum', 'faculty'])->group(function (): void {
     Route::post('pdf', [PdfController::class, 'generate']);
+    Route::post('pdf/from-docx', [PdfController::class, 'fromDocx']);
     Route::get('assessments', [AssessmentController::class, 'index']);
     Route::post('assessments', [AssessmentController::class, 'store']);
     Route::get('assessments/{assessment}', [AssessmentController::class, 'show']);
