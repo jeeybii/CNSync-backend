@@ -214,13 +214,20 @@ class GeminiQuestionGenerator
     {
         return [
             'Primary source: use the provided learning material context below.',
-            'NEVER ask about course titles, course codes, instructor names, course policies, grading systems, or any administrative/syllabus metadata.',
+            'STRICT PROHIBITION — never generate questions about any of the following:',
+            '  - The purpose, structure, or goals of a course orientation or introduction class.',
+            '  - Course titles, course codes, instructor names, grading policies, course schedules.',
+            '  - Institutional rules, policies, expectations, or syllabi.',
+            '  - What a course orientation IS or what it aims to achieve.',
+            '  Even if the topic is named "Course Orientation" or "Introduction", generate a question',
+            '  about the TECHNICAL SUBJECT MATTER of the course (e.g. networking, programming, etc.),',
+            '  NOT about the administrative orientation session itself.',
             'If the context is sufficient, base questions strictly on it.',
             'If the context is insufficient for the required question type or Bloom level, supplement with',
             '  your subject-matter knowledge about the topic to produce a valid, educationally sound question.',
             '  Do NOT fail — always generate a complete, properly formatted question.',
             'Some context chunks may be prefixed with [TOPIC GUIDE]. These are syllabus topic descriptions, NOT learning material.',
-            '  - Use [TOPIC GUIDE] chunks only to understand what subject area the question must cover.',
+            '  - Use [TOPIC GUIDE] chunks only to understand what TECHNICAL subject area the question must cover.',
             '  - Do NOT quote or reference anything from a [TOPIC GUIDE] chunk directly in the question.',
         ];
     }
