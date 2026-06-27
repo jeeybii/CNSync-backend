@@ -202,6 +202,21 @@ class TosController extends Controller
         array $topicWeights,
         array $topicItemCounts
     ): TosRun {
+        $bloomLevels = array_keys($bloomDistribution);
+
+        // Compute global bloom targets first so the overall distribution is
+        // correct regardless of how many items each topic receives.
+        // Without this, per-topic LR rounding causes early bloom levels to
+        // absorb all items (e.g. 13/7/0 instead of 7/7/6 for 20 items).
+        $globalBloomCounts = $this->allocateByLargestRemainder(
+            array_values($bloomDistribution),
+            $totalItems,
+        );
+
+        // Remaining global budget per bloom level — draw from it per topic.
+        /** @var array<string, int> $bloomBudget */
+        $bloomBudget = array_combine($bloomLevels, $globalBloomCounts);
+
         $allocationRows = [];
         foreach ($topics as $index => $topic) {
             $topicTotalItems = $topicItemCounts[$index];
@@ -209,14 +224,25 @@ class TosController extends Controller
                 continue;
             }
 
-            $bloomItemCounts = $this->allocateByLargestRemainder(array_values($bloomDistribution), $topicTotalItems);
-            $bloomLevels = array_keys($bloomDistribution);
+            $totalBudget = array_sum($bloomBudget);
+            if ($totalBudget <= 0) {
+                break;
+            }
 
-            foreach ($bloomLevels as $bloomIndex => $bloomLevel) {
-                $itemCount = $bloomItemCounts[$bloomIndex];
+            // Distribute this topic's items proportionally from the remaining budget.
+            $weights = array_map(
+                static fn (int $b): float => $b / $totalBudget,
+                array_values($bloomBudget),
+            );
+            $topicBloomCounts = $this->allocateByLargestRemainder($weights, $topicTotalItems);
+
+            foreach ($bloomLevels as $bi => $bloomLevel) {
+                $itemCount = $topicBloomCounts[$bi];
                 if ($itemCount === 0) {
                     continue;
                 }
+
+                $bloomBudget[$bloomLevel] -= $itemCount;
 
                 $allocationRows[] = [
                     'topic_name' => $topic['name'],

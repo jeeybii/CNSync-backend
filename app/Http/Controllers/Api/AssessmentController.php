@@ -219,13 +219,17 @@ class AssessmentController extends Controller
     {
         $allocations = $tosRun->allocations;
 
-        // Distinct bloom levels in first-appearance order from allocations
-        $bloomLevels = $allocations
-            ->pluck('bloom_level')
-            ->map(fn ($b) => $b->value)
-            ->unique()
-            ->values()
-            ->toArray();
+        // Use the bloom_distribution keys (all requested levels) instead of
+        // deriving from allocations — allocations only contain levels with ≥1
+        // item, so any zero-item level would be silently dropped from the table.
+        $bloomLevels = ! empty($tosRun->bloom_distribution)
+            ? array_keys($tosRun->bloom_distribution)
+            : $allocations
+                ->pluck('bloom_level')
+                ->map(fn ($b) => $b->value)
+                ->unique()
+                ->values()
+                ->toArray();
 
         // Syllabus topic order preserved from the TOS run snapshot
         $topicOrder = collect($tosRun->topics ?? [])->pluck('name')->toArray();
