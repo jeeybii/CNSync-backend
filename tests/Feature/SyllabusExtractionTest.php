@@ -72,6 +72,9 @@ test('faculty can extract structured syllabus topics from analyzed syllabus docu
     $document->refresh();
     expect($document->status)->toBe(DocumentStatus::TosReady);
     expect($document->syllabusTopics()->count())->toBe(2);
+
+    Http::assertSent(fn ($request): bool => $request->hasHeader('x-goog-api-key', 'test-key')
+        && ! str_contains($request->url(), '?key='));
 });
 
 test('syllabus extraction rejects non syllabus document', function () {

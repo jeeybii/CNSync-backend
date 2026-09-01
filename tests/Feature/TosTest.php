@@ -153,4 +153,7 @@ test('faculty can create tos run from extracted syllabus topics', function () {
         ->assertJsonPath('data.total_items', 10)
         ->assertJsonPath('data.topics.0.name', 'Topic A')
         ->assertJsonPath('data.bloom_distribution.apply', 0.4);
+
+    Http::assertSent(fn ($request): bool => $request->hasHeader('x-goog-api-key', 'test-key')
+        && ! str_contains($request->url(), '?key='));
 });

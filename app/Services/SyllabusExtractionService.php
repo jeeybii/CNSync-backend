@@ -119,10 +119,11 @@ class SyllabusExtractionService
         $lastResponse = null;
 
         foreach ($models as $model) {
-            $url = sprintf('%s/v1beta/models/%s:generateContent?key=%s', $baseUrl, $model, $apiKey);
+            $url = sprintf('%s/v1beta/models/%s:generateContent', $baseUrl, $model);
 
             for ($attempt = 1; $attempt <= $retries; $attempt++) {
-                $response = Http::timeout(40)
+                $response = Http::withHeaders(['x-goog-api-key' => $apiKey])
+                    ->timeout(40)
                     ->connectTimeout(10)
                     ->post($url, [
                         'contents' => [

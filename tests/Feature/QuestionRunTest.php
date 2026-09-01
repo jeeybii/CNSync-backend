@@ -126,6 +126,8 @@ test('faculty can generate grounded question run from tos allocations', function
         ->assertJsonPath('data.items.1.question_type', 'true_false');
 
     Http::assertSentCount(3);
+    Http::assertSent(fn ($request): bool => $request->hasHeader('x-goog-api-key', 'test-key')
+        && ! str_contains($request->url(), '?key='));
 });
 
 test('question generation returns validation error when analyzed documents are missing', function () {

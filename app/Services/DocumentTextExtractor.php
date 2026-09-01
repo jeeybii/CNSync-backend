@@ -96,7 +96,12 @@ class DocumentTextExtractor
 
         /** @var string $absolutePath */
         $absolutePath = $disk->path($path);
-        $command = sprintf('pdftotext -layout -q %s - 2>/dev/null', escapeshellarg($absolutePath));
+        $nullDevice = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+        $command = sprintf(
+            'pdftotext -layout -q %s - 2>%s',
+            escapeshellarg($absolutePath),
+            $nullDevice,
+        );
 
         $output = shell_exec($command);
         if (! is_string($output)) {

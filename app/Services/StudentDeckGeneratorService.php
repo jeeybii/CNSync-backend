@@ -272,7 +272,12 @@ class StudentDeckGeneratorService
 
     private function extractPdf(string $absolutePath): string
     {
-        $command = sprintf('pdftotext -layout -q %s - 2>/dev/null', escapeshellarg($absolutePath));
+        $nullDevice = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+        $command = sprintf(
+            'pdftotext -layout -q %s - 2>%s',
+            escapeshellarg($absolutePath),
+            $nullDevice,
+        );
         $output = shell_exec($command);
 
         if (is_string($output) && trim($output) !== '') {
@@ -355,10 +360,11 @@ class StudentDeckGeneratorService
         $lastResponse = null;
 
         foreach ($models as $model) {
-            $url = sprintf('%s/v1beta/models/%s:generateContent?key=%s', $baseUrl, $model, $apiKey);
+            $url = sprintf('%s/v1beta/models/%s:generateContent', $baseUrl, $model);
 
             for ($attempt = 1; $attempt <= $retries; $attempt++) {
-                $response = Http::timeout((int) config('services.gemini.timeout', 120))
+                $response = Http::withHeaders(['x-goog-api-key' => $apiKey])
+                    ->timeout((int) config('services.gemini.timeout', 120))
                     ->connectTimeout(15)
                     ->post($url, [
                         'contents' => [[
