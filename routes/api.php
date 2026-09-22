@@ -30,6 +30,7 @@ Route::middleware(['auth:sanctum', 'faculty'])->group(function (): void {
     Route::post('pdf/from-docx', [PdfController::class, 'fromDocx']);
     Route::get('assessments', [AssessmentController::class, 'index']);
     Route::post('assessments', [AssessmentController::class, 'store']);
+    Route::post('assessments/pair', [AssessmentController::class, 'storePair']);
     Route::get('assessments/{assessment}', [AssessmentController::class, 'show']);
     Route::patch('assessments/{assessment}', [AssessmentController::class, 'update']);
     Route::delete('assessments/{assessment}', [AssessmentController::class, 'destroy']);
@@ -38,7 +39,9 @@ Route::middleware(['auth:sanctum', 'faculty'])->group(function (): void {
     Route::get('projects/{project}/documents', [DocumentController::class, 'index']);
     Route::post('projects/{project}/documents', [DocumentController::class, 'store']);
     Route::post('projects/{project}/documents/bundle', [DocumentController::class, 'storeBundle']);
+    Route::post('projects/{project}/syllabus-topics/{syllabusTopic}/materials', [DocumentController::class, 'storeTopicMaterials']);
     Route::get('projects/{project}/documents/{document}', [DocumentController::class, 'show']);
+    Route::patch('projects/{project}/documents/{document}/topic', [DocumentController::class, 'assignTopic']);
     Route::get('projects/{project}/documents/{document}/transitions', [DocumentController::class, 'transitions']);
     Route::get('projects/{project}/documents/{document}/syllabus-topics', [DocumentController::class, 'syllabusTopics']);
     Route::post('projects/{project}/documents/{document}/extract-syllabus', [DocumentController::class, 'extractSyllabus']);
@@ -47,9 +50,11 @@ Route::middleware(['auth:sanctum', 'faculty'])->group(function (): void {
     Route::get('projects/{project}/tos-runs', [TosController::class, 'index']);
     Route::post('projects/{project}/tos-runs', [TosController::class, 'store']);
     Route::post('projects/{project}/tos-runs/from-syllabus', [TosController::class, 'storeFromSyllabus']);
+    Route::post('projects/{project}/tos-runs/pair/from-syllabus', [TosController::class, 'storePairFromSyllabus']);
     Route::get('projects/{project}/tos-runs/{tosRun}', [TosController::class, 'show']);
     Route::get('projects/{project}/question-runs', [QuestionRunController::class, 'index']);
     Route::post('projects/{project}/question-runs', [QuestionRunController::class, 'store']);
+    Route::post('projects/{project}/question-runs/pair', [QuestionRunController::class, 'storePair']);
     Route::get('projects/{project}/question-runs/{questionRun}', [QuestionRunController::class, 'show']);
     Route::post('projects/{project}/question-runs/{questionRun}/items', [QuestionItemController::class, 'store']);
     Route::put('projects/{project}/question-runs/{questionRun}/items/{questionItem}', [QuestionItemController::class, 'update']);
@@ -81,6 +86,7 @@ Route::middleware(['auth:sanctum', 'student'])->group(function (): void {
     Route::get('student/decks', [StudentDeckController::class, 'index']);
     Route::post('student/decks', [StudentDeckController::class, 'store']);
     Route::get('student/decks/{studentDeck}', [StudentDeckController::class, 'show']);
+    Route::post('student/decks/{studentDeck}/grade-essay', [StudentDeckController::class, 'gradeEssay']);
     Route::delete('student/decks/{studentDeck}', [StudentDeckController::class, 'destroy']);
 
     Route::get('student/decks/{studentDeck}/sessions', [StudentStudySessionController::class, 'index']);

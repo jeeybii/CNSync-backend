@@ -11,6 +11,8 @@ use App\Models\TosRun;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class AssessmentController extends Controller
 {
@@ -76,6 +78,64 @@ class AssessmentController extends Controller
         return response()->json([
             'data' => $this->serializeAssessment($assessment, withComputedTos: true),
         ], 201);
+    }
+
+    public function storePair(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'project_id' => ['required', 'integer'],
+            'midterm' => ['required', 'array'],
+            'final' => ['required', 'array'],
+            'midterm.question_run_id' => ['required', 'integer'],
+            'final.question_run_id' => ['required', 'integer', 'different:midterm.question_run_id'],
+            'midterm.title' => ['required', 'string', 'max:255'],
+            'final.title' => ['required', 'string', 'max:255'],
+            'midterm.number_of_sets' => ['sometimes', 'integer', 'in:1,2'],
+            'final.number_of_sets' => ['sometimes', 'integer', 'in:1,2'],
+            'midterm.tos' => ['sometimes', 'array'],
+            'final.tos' => ['sometimes', 'array'],
+        ]);
+
+        $project = Project::query()
+            ->where('user_id', $request->user()->id)
+            ->findOrFail($validated['project_id']);
+
+        $runs = [];
+        foreach (['midterm', 'final'] as $term) {
+            $runs[$term] = QuestionRun::query()
+                ->where('project_id', $project->id)
+                ->with(['items' => fn ($query) => $query->orderBy('sequence'), 'tosRun.allocations'])
+                ->findOrFail($validated[$term]['question_run_id']);
+
+            if ($runs[$term]->tosRun?->term !== $term || $runs[$term]->status !== 'completed') {
+                throw ValidationException::withMessages([
+                    "$term.question_run_id" => [sprintf('Provide a completed %s question run.', $term)],
+                ]);
+            }
+        }
+
+        return DB::transaction(function () use ($request, $project, $validated, $runs): JsonResponse {
+            $assessments = [];
+            foreach (['midterm', 'final'] as $term) {
+                $run = $runs[$term];
+                $numberOfSets = (int) ($validated[$term]['number_of_sets'] ?? 1);
+                $assessment = Assessment::query()->create([
+                    'user_id' => $request->user()->id,
+                    'project_id' => $project->id,
+                    'question_run_id' => $run->id,
+                    'title' => $validated[$term]['title'],
+                    'exam_type' => $term,
+                    'number_of_items' => $run->items->count(),
+                    'number_of_sets' => $numberOfSets,
+                    'set_b_sequence' => $numberOfSets === 2 ? $this->buildShuffledSequence($run->items) : null,
+                    'tos' => $validated[$term]['tos'] ?? [],
+                ]);
+                $assessment->setRelation('questionRun', $run);
+                $assessments[$term] = $this->serializeAssessment($assessment, withComputedTos: true);
+            }
+
+            return response()->json(['data' => $assessments], 201);
+        });
     }
 
     public function show(Assessment $assessment): JsonResponse

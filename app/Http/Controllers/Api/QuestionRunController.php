@@ -50,8 +50,79 @@ class QuestionRunController extends Controller
         ]);
 
         $tosRun = $this->resolveTosRun($project, $validated['tos_run_id'] ?? null);
+
+        return $this->generateForTosRun(
+            $request,
+            $project,
+            $tosRun,
+            $validated['question_type_distribution'] ?? $tosRun->question_type_distribution,
+            $generator,
+        );
+    }
+
+    public function storePair(Request $request, Project $project, GeminiQuestionGenerator $generator): JsonResponse
+    {
+        set_time_limit(0);
+
+        $validated = $request->validate([
+            'midterm_tos_run_id' => ['required', 'integer'],
+            'final_tos_run_id' => ['required', 'integer', 'different:midterm_tos_run_id'],
+        ]);
+
+        $midterm = $this->resolveTosRun($project, $validated['midterm_tos_run_id']);
+        $final = $this->resolveTosRun($project, $validated['final_tos_run_id']);
+        if ($midterm->term !== 'midterm' || $final->term !== 'final') {
+            throw ValidationException::withMessages([
+                'tos_runs' => ['Provide one Midterm TOS and one Finals TOS.'],
+            ]);
+        }
+
+        $generated = [];
+        foreach (['midterm' => $midterm, 'final' => $final] as $term => $tosRun) {
+            $existing = $project->questionRuns()
+                ->where('tos_run_id', $tosRun->id)
+                ->where('status', 'completed')
+                ->with(['items' => fn ($query) => $query->orderBy('sequence'), 'tosRun'])
+                ->latest('id')
+                ->first();
+            if ($existing !== null) {
+                $generated[$term] = $existing->toArray();
+
+                continue;
+            }
+
+            $response = $this->generateForTosRun(
+                $request,
+                $project,
+                $tosRun,
+                $tosRun->question_type_distribution,
+                $generator,
+            );
+            if ($response->getStatusCode() !== 201) {
+                return response()->json([
+                    'message' => sprintf('%s generation failed; the other term was not discarded.', ucfirst($term)),
+                    'completed' => $generated,
+                    'error' => $response->getData(true),
+                ], $response->getStatusCode());
+            }
+            $generated[$term] = $response->getData(true)['data'];
+        }
+
+        return response()->json(['data' => $generated], 201);
+    }
+
+    /**
+     * @param  array<string, int>|null  $distribution
+     */
+    private function generateForTosRun(
+        Request $request,
+        Project $project,
+        TosRun $tosRun,
+        ?array $distribution,
+        GeminiQuestionGenerator $generator
+    ): JsonResponse {
         $requestedItems = (int) $tosRun->allocations->sum('item_count');
-        $questionTypePlan = $this->resolveQuestionTypePlan($requestedItems, $validated['question_type_distribution'] ?? null);
+        $questionTypePlan = $this->resolveQuestionTypePlan($requestedItems, $distribution);
         $documents = Document::query()
             ->where('project_id', $project->id)
             ->whereIn('status', [DocumentStatus::Analyzed, DocumentStatus::TosReady])
@@ -75,8 +146,12 @@ class QuestionRunController extends Controller
         // covered in the learning materials (used as a subject-scope guide, not a source).
         $syllabusTopics = SyllabusTopic::query()
             ->where('project_id', $project->id)
-            ->get(['topic_name', 'hours', 'objective'])
-            ->keyBy('topic_name');
+            ->when($tosRun->term !== null, fn ($query) => $query->where('term', $tosRun->term))
+            ->orderBy('position')
+            ->orderBy('id')
+            ->get(['id', 'topic_name', 'hours', 'objective', 'week_number'])
+            ->keyBy('id');
+        $syllabusTopicsByName = $syllabusTopics->keyBy('topic_name');
 
         $questionRun = $project->questionRuns()->create([
             'tos_run_id' => $tosRun->id,
@@ -94,13 +169,21 @@ class QuestionRunController extends Controller
             $questionTypeIndex = 0;
 
             foreach ($tosRun->allocations as $allocation) {
-                $contexts = $generator->retrieveContext($allocation->topic_name, $materialDocuments);
+                $syllabusTopic = $allocation->syllabus_topic_id !== null
+                    ? $syllabusTopics->get($allocation->syllabus_topic_id)
+                    : $syllabusTopicsByName->get($allocation->topic_name);
+                $topicMaterials = array_values(array_filter(
+                    $materialDocuments,
+                    fn (Document $material): bool => $material->syllabus_topic_id !== null
+                        ? $material->syllabus_topic_id === $syllabusTopic?->id
+                        : ($material->week_number === null || $material->week_number === $syllabusTopic?->week_number),
+                ));
+                $contexts = $generator->retrieveContext($allocation->topic_name, $topicMaterials);
 
                 // When no learning material explicitly mentions this topic, supplement with the
                 // syllabus topic objective as a subject-scope guide so the AI knows what the
                 // topic is about — without quoting from the syllabus directly.
-                if (! $generator->hasTopicMatch($allocation->topic_name, $materialDocuments)) {
-                    $syllabusTopic = $syllabusTopics->get($allocation->topic_name);
+                if (! $generator->hasTopicMatch($allocation->topic_name, $topicMaterials)) {
                     if ($syllabusTopic) {
                         $guideText = sprintf(
                             '[TOPIC GUIDE - use only to understand the subject scope, do NOT quote from this] Topic: %s | Scope: %s',

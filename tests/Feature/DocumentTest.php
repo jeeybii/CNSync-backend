@@ -4,6 +4,7 @@ use App\Enums\DocumentKind;
 use App\Enums\DocumentStatus;
 use App\Models\Document;
 use App\Models\Project;
+use App\Models\SyllabusTopic;
 use App\Models\User;
 use App\Services\DocumentTextExtractor;
 use Illuminate\Http\UploadedFile;
@@ -79,23 +80,37 @@ test('document list and show are scoped to project', function () {
 
     $user = User::factory()->create();
     $project = Project::factory()->for($user)->create();
+    $syllabus = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::TosReady,
+    ]);
+    $topic = SyllabusTopic::query()->create([
+        'project_id' => $project->id,
+        'document_id' => $syllabus->id,
+        'topic_name' => 'Networks',
+        'hours' => 2,
+        'week_number' => 1,
+        'position' => 1,
+    ]);
 
     $file = UploadedFile::fake()->create('notes.pdf', 100, 'application/pdf');
 
     $this->post("/api/projects/{$project->id}/documents", [
         'kind' => 'material',
         'file' => $file,
+        'syllabus_topic_id' => $topic->id,
     ], facultyAuthHeader($user))->assertCreated();
 
     $this->getJson("/api/projects/{$project->id}/documents", facultyAuthHeader($user))
         ->assertOk()
-        ->assertJsonCount(1, 'data');
+        ->assertJsonCount(2, 'data');
 
-    $docId = Document::query()->first()->id;
+    $docId = Document::query()->where('kind', DocumentKind::Material)->firstOrFail()->id;
 
     $this->getJson("/api/projects/{$project->id}/documents/{$docId}", facultyAuthHeader($user))
         ->assertOk()
-        ->assertJsonPath('data.kind', 'material');
+        ->assertJsonPath('data.kind', 'material')
+        ->assertJsonPath('data.syllabus_topic_id', $topic->id);
 });
 
 test('document delete removes file and row', function () {
@@ -104,12 +119,24 @@ test('document delete removes file and row', function () {
 
     $user = User::factory()->create();
     $project = Project::factory()->for($user)->create();
+    $syllabus = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::TosReady,
+    ]);
+    $topic = SyllabusTopic::query()->create([
+        'project_id' => $project->id,
+        'document_id' => $syllabus->id,
+        'topic_name' => 'Networks',
+        'hours' => 2,
+        'position' => 1,
+    ]);
 
     $file = UploadedFile::fake()->create('temp.pdf', 50, 'application/pdf');
 
     $created = $this->post("/api/projects/{$project->id}/documents", [
         'kind' => 'material',
         'file' => $file,
+        'syllabus_topic_id' => $topic->id,
     ], facultyAuthHeader($user));
 
     $docId = $created->json('data.id');
@@ -144,23 +171,23 @@ test('project accepts only one syllabus upload', function () {
         ->assertJsonPath('message', 'Only one syllabus document is allowed per project.');
 });
 
-test('project accepts at most ten learning materials', function () {
+test('project accepts at most one hundred learning materials for topic uploads', function () {
     Storage::fake('local');
     bindFakeDocumentExtractor();
 
     $user = User::factory()->create();
     $project = Project::factory()->for($user)->create();
-    Document::factory()->count(10)->for($project)->create(['kind' => DocumentKind::Material]);
+    Document::factory()->count(100)->for($project)->create(['kind' => DocumentKind::Material]);
 
     $this->postJson("/api/projects/{$project->id}/documents", [
         'kind' => 'material',
-        'file' => UploadedFile::fake()->create('module-11.pdf', 200, 'application/pdf'),
+        'file' => UploadedFile::fake()->create('module-101.pdf', 200, 'application/pdf'),
     ], facultyAuthHeader($user))
         ->assertUnprocessable()
-        ->assertJsonPath('message', 'A project can have at most 10 learning material documents.');
+        ->assertJsonPath('message', 'A project can have at most 100 learning material documents.');
 });
 
-test('bundle upload accepts one syllabus and multiple materials in one request', function () {
+test('bundle upload cannot bypass syllabus-first topic assignment', function () {
     Storage::fake('local');
     bindFakeDocumentExtractor();
 
@@ -175,11 +202,10 @@ test('bundle upload accepts one syllabus and multiple materials in one request',
         ],
     ], facultyAuthHeader($user));
 
-    $response->assertCreated()
-        ->assertJsonPath('data.syllabus.kind', 'syllabus')
-        ->assertJsonCount(2, 'data.materials');
+    $response->assertUnprocessable()
+        ->assertJsonPath('message', 'Upload and extract the syllabus first, then upload materials to its topics.');
 
-    expect(Document::query()->where('project_id', $project->id)->count())->toBe(3);
+    expect(Document::query()->where('project_id', $project->id)->count())->toBe(0);
 });
 
 test('bundle upload validates limits and uniqueness constraints', function () {
@@ -197,5 +223,80 @@ test('bundle upload validates limits and uniqueness constraints', function () {
         ],
     ], facultyAuthHeader($user))
         ->assertUnprocessable()
-        ->assertJsonPath('message', 'Only one syllabus document is allowed per project.');
+        ->assertJsonPath('message', 'Upload and extract the syllabus first, then upload materials to its topics.');
+});
+
+test('materials require an extracted topic from the same project and multiple files can share it', function () {
+    Storage::fake('local');
+    bindFakeDocumentExtractor();
+
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    $syllabus = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::Analyzed,
+    ]);
+    $topic = SyllabusTopic::query()->create([
+        'project_id' => $project->id,
+        'document_id' => $syllabus->id,
+        'topic_name' => 'Network Hardware',
+        'hours' => 2,
+        'week_number' => 3,
+        'position' => 1,
+    ]);
+
+    $upload = fn (int $topicId, string $name) => $this->post("/api/projects/{$project->id}/documents", [
+        'kind' => 'material',
+        'file' => UploadedFile::fake()->create($name, 100, 'application/pdf'),
+        'syllabus_topic_id' => $topicId,
+    ], facultyAuthHeader($user));
+
+    $upload($topic->id, 'before-extraction.pdf')->assertUnprocessable();
+    $syllabus->update(['status' => DocumentStatus::TosReady]);
+    $upload($topic->id, 'first.pdf')->assertCreated()
+        ->assertJsonPath('data.syllabus_topic_id', $topic->id)
+        ->assertJsonPath('data.week_number', 3);
+    $upload($topic->id, 'second.pdf')->assertCreated();
+
+    $this->post("/api/projects/{$project->id}/syllabus-topics/{$topic->id}/materials", [
+        'materials' => [
+            UploadedFile::fake()->create('third.pdf', 100, 'application/pdf'),
+            UploadedFile::fake()->create('fourth.pdf', 100, 'application/pdf'),
+        ],
+    ], facultyAuthHeader($user))
+        ->assertCreated()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.syllabus_topic_id', $topic->id);
+
+    $this->getJson("/api/projects/{$project->id}/documents/{$syllabus->id}/syllabus-topics", facultyAuthHeader($user))
+        ->assertOk()
+        ->assertJsonCount(4, 'data.0.materials');
+
+    $otherProject = Project::factory()->for($user)->create();
+    $otherSyllabus = Document::factory()->for($otherProject)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::TosReady,
+    ]);
+    $otherTopic = SyllabusTopic::query()->create([
+        'project_id' => $otherProject->id,
+        'document_id' => $otherSyllabus->id,
+        'topic_name' => 'Other',
+        'hours' => 1,
+    ]);
+    $upload($otherTopic->id, 'wrong-project.pdf')->assertUnprocessable();
+    $this->post("/api/projects/{$project->id}/syllabus-topics/{$otherTopic->id}/materials", [
+        'materials' => [UploadedFile::fake()->create('wrong-project.pdf', 100, 'application/pdf')],
+    ], facultyAuthHeader($user))->assertUnprocessable();
+
+    $legacyMaterial = Document::factory()->for($project)->create(['kind' => DocumentKind::Material]);
+    $this->patchJson("/api/projects/{$project->id}/documents/{$legacyMaterial->id}/topic", [
+        'syllabus_topic_id' => $otherTopic->id,
+    ], facultyAuthHeader($user))->assertUnprocessable();
+    $this->patchJson("/api/projects/{$project->id}/documents/{$legacyMaterial->id}/topic", [
+        'syllabus_topic_id' => $topic->id,
+    ], facultyAuthHeader($user))
+        ->assertOk()
+        ->assertJsonPath('data.syllabus_topic_id', $topic->id)
+        ->assertJsonPath('data.week_number', 3);
+    expect($project->documents()->where('kind', DocumentKind::Material)->count())->toBe(5);
 });

@@ -26,19 +26,12 @@ test('faculty can create deterministic tos run and allocations sum to requested 
             ['name' => 'Topic A', 'hours' => 3],
             ['name' => 'Topic B', 'hours' => 2],
         ],
-        'bloom_distribution' => [
-            'knowledge' => 20,
-            'understand' => 25,
-            'apply' => 20,
-            'analyze' => 15,
-            'evaluate' => 10,
-            'create' => 10,
-        ],
+        'bloom_levels' => ['remembering', 'understanding', 'applying'],
     ], facultyTosAuthHeader($user));
 
     $response->assertCreated()
         ->assertJsonPath('data.total_items', 20)
-        ->assertJsonCount(12, 'data.allocations');
+        ->assertJsonCount(6, 'data.allocations');
 
     $allocations = collect($response->json('data.allocations'));
 
@@ -64,6 +57,7 @@ test('tos run show and index are scoped to owner project', function () {
             ['name' => 'Topic A', 'hours' => 1],
             ['name' => 'Topic B', 'hours' => 1],
         ],
+        'bloom_levels' => ['remembering', 'understanding', 'applying'],
     ], facultyTosAuthHeader($owner))->assertCreated();
 
     $tosRunId = $created->json('data.id');
@@ -135,25 +129,116 @@ test('faculty can create tos run from extracted syllabus topics', function () {
         'topic_name' => 'Topic A',
         'hours' => 6,
         'objective' => 'Understand A',
+        'position' => 2,
     ]);
 
-    SyllabusTopic::query()->create([
+    $firstInSyllabus = SyllabusTopic::query()->create([
         'project_id' => $project->id,
         'document_id' => $document->id,
         'topic_name' => 'Topic B',
         'hours' => 4,
         'objective' => 'Understand B',
+        'position' => 1,
     ]);
 
     $this->postJson("/api/projects/{$project->id}/tos-runs/from-syllabus", [
         'total_items' => 10,
         'syllabus_document_id' => $document->id,
+        'bloom_levels' => ['remembering', 'understanding', 'applying'],
     ], facultyTosAuthHeader($user))
         ->assertCreated()
         ->assertJsonPath('data.total_items', 10)
-        ->assertJsonPath('data.topics.0.name', 'Topic A')
-        ->assertJsonPath('data.bloom_distribution.apply', 0.4);
+        ->assertJsonPath('data.topics.0.name', 'Topic B')
+        ->assertJsonPath('data.allocations.0.topic_name', 'Topic B')
+        ->assertJsonPath('data.allocations.0.syllabus_topic_id', $firstInSyllabus->id)
+        ->assertJsonPath('data.bloom_distribution.applying', 1 / 3);
+});
 
-    Http::assertSent(fn ($request): bool => $request->hasHeader('x-goog-api-key', 'test-key')
-        && ! str_contains($request->url(), '?key='));
+test('term scoped tos does not wait for materials for every topic', function () {
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    $syllabus = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::TosReady,
+    ]);
+    foreach ([['Topic A', 'midterm', 1], ['Topic B', 'midterm', 2], ['Topic C', 'final', 3]] as [$name, $term, $week]) {
+        SyllabusTopic::query()->create([
+            'project_id' => $project->id,
+            'document_id' => $syllabus->id,
+            'topic_name' => $name,
+            'hours' => 2,
+            'term' => $term,
+            'week_number' => $week,
+        ]);
+    }
+    Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Material,
+        'status' => DocumentStatus::Analyzed,
+        'week_number' => 1,
+    ]);
+
+    $payload = [
+        'total_items' => 6,
+        'syllabus_document_id' => $syllabus->id,
+        'bloom_levels' => ['remembering', 'understanding', 'applying'],
+        'term' => 'midterm',
+    ];
+    $url = "/api/projects/{$project->id}/tos-runs/from-syllabus";
+    $this->postJson($url, $payload, facultyTosAuthHeader($user))
+        ->assertCreated()
+        ->assertJsonCount(2, 'data.topics')
+        ->assertJsonPath('data.term', 'midterm');
+});
+
+test('paired tos creates both terms with independent item counts and overridable question mixes', function () {
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    $syllabus = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::TosReady,
+        'suggested_bloom_levels_by_term' => [
+            'midterm' => ['remembering', 'understanding', 'applying'],
+            'final' => ['analyzing', 'evaluating', 'creating'],
+        ],
+        'suggested_question_type_percentages_by_term' => [
+            'midterm' => ['multiple_choice' => 50, 'true_false' => 20, 'identification' => 0, 'essay' => 30],
+            'final' => ['multiple_choice' => 20, 'true_false' => 10, 'identification' => 20, 'essay' => 50],
+        ],
+    ]);
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Material]);
+
+    foreach ([['Midterm Topic', 'midterm', 1], ['Final Topic', 'final', 2]] as [$name, $term, $position]) {
+        SyllabusTopic::query()->create([
+            'project_id' => $project->id,
+            'document_id' => $syllabus->id,
+            'topic_name' => $name,
+            'hours' => 2,
+            'term' => $term,
+            'position' => $position,
+            'bloom_level' => $term === 'midterm' ? 'understanding' : 'analyzing',
+        ]);
+    }
+
+    $this->postJson("/api/projects/{$project->id}/tos-runs/pair/from-syllabus", [
+        'syllabus_document_id' => $syllabus->id,
+        'midterm' => ['total_items' => 10],
+        'final' => [
+            'total_items' => 7,
+            'question_type_percentages' => [
+                'multiple_choice' => 0,
+                'true_false' => 0,
+                'identification' => 0,
+                'essay' => 100,
+            ],
+        ],
+    ], facultyTosAuthHeader($user))
+        ->assertCreated()
+        ->assertJsonPath('data.midterm.tos_run.term', 'midterm')
+        ->assertJsonPath('data.final.tos_run.term', 'final')
+        ->assertJsonPath('data.midterm.question_type_distribution.multiple_choice', 5)
+        ->assertJsonPath('data.midterm.question_type_distribution.true_false', 2)
+        ->assertJsonPath('data.midterm.question_type_distribution.essay', 3)
+        ->assertJsonPath('data.final.question_type_distribution.essay', 7);
+
+    expect($project->tosRuns()->count())->toBe(2);
 });

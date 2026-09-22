@@ -13,6 +13,8 @@ class TosRun extends Model
         'total_items',
         'topics',
         'bloom_distribution',
+        'term',
+        'question_type_distribution',
     ];
 
     protected function casts(): array
@@ -20,6 +22,7 @@ class TosRun extends Model
         return [
             'topics' => 'array',
             'bloom_distribution' => 'array',
+            'question_type_distribution' => 'array',
         ];
     }
 
@@ -30,7 +33,7 @@ class TosRun extends Model
 
     public function allocations(): HasMany
     {
-        return $this->hasMany(TosAllocation::class);
+        return $this->hasMany(TosAllocation::class)->orderBy('id');
     }
 
     public function questionRuns(): HasMany

@@ -9,6 +9,7 @@ use App\Models\Document;
 use App\Models\Project;
 use App\Models\SyllabusTopic;
 use App\Models\TosRun;
+use App\Services\ExamSuggestionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,7 +22,7 @@ class TosController extends Controller
     public function index(Project $project): JsonResponse
     {
         $runs = $project->tosRuns()
-            ->with(['allocations' => fn ($query) => $query->orderBy('topic_name')->orderBy('bloom_level')])
+            ->with(['allocations' => fn ($query) => $query->orderBy('id')])
             ->orderByDesc('created_at')
             ->get();
 
@@ -61,22 +62,27 @@ class TosController extends Controller
 
     public function storeFromSyllabus(Request $request, Project $project): JsonResponse
     {
-        $this->assertRequiredDocumentsUploaded($project);
-
         $validated = $request->validate([
             'total_items' => ['required', 'integer', 'min:1', 'max:500'],
             'syllabus_document_id' => ['nullable', 'integer'],
             'bloom_levels' => ['required', 'array', 'size:3'],
             'bloom_levels.*' => ['required', 'string', Rule::in(BloomLevel::values())],
+            'term' => ['nullable', 'string', Rule::in(['midterm', 'final'])],
         ]);
+
+        $term = $validated['term'] ?? null;
+        $this->assertRequiredDocumentsUploaded($project);
 
         $this->validateUniqueBloomLevels($validated['bloom_levels']);
 
         $document = $this->resolveSyllabusDocument($project, $validated['syllabus_document_id'] ?? null);
         $topics = $document->syllabusTopics()
+            ->when($term !== null, fn ($query) => $query->where('term', $term))
+            ->orderBy('position')
             ->orderBy('id')
-            ->get(['topic_name', 'hours'])
+            ->get(['id', 'topic_name', 'hours'])
             ->map(fn (SyllabusTopic $topic): array => [
+                'syllabus_topic_id' => $topic->id,
                 'name' => $topic->topic_name,
                 'hours' => $topic->hours,
             ])
@@ -99,16 +105,129 @@ class TosController extends Controller
             $bloomDistribution,
             $topicWeights,
             $topicItemCounts,
+            $term,
         );
 
         return response()->json(['data' => $tosRun], 201);
+    }
+
+    public function storePairFromSyllabus(Request $request, Project $project, ExamSuggestionService $suggestions): JsonResponse
+    {
+        $validated = $request->validate([
+            'syllabus_document_id' => ['nullable', 'integer'],
+            'midterm' => ['required', 'array'],
+            'final' => ['required', 'array'],
+            'midterm.total_items' => ['required', 'integer', 'min:1', 'max:500'],
+            'final.total_items' => ['required', 'integer', 'min:1', 'max:500'],
+            'midterm.bloom_levels' => ['sometimes', 'array', 'min:3', 'max:6'],
+            'final.bloom_levels' => ['sometimes', 'array', 'min:3', 'max:6'],
+            'midterm.bloom_levels.*' => ['string', Rule::in(BloomLevel::values())],
+            'final.bloom_levels.*' => ['string', Rule::in(BloomLevel::values())],
+            'midterm.question_type_percentages' => ['sometimes', 'array'],
+            'final.question_type_percentages' => ['sometimes', 'array'],
+            'midterm.question_type_percentages.*' => ['numeric', 'min:0'],
+            'final.question_type_percentages.*' => ['numeric', 'min:0'],
+        ]);
+
+        $this->assertRequiredDocumentsUploaded($project);
+        $document = $this->resolveSyllabusDocument($project, $validated['syllabus_document_id'] ?? null);
+        $runs = [];
+
+        foreach (['midterm', 'final'] as $term) {
+            $termTopics = $document->syllabusTopics()
+                ->where('term', $term)
+                ->orderBy('position')
+                ->orderBy('id')
+                ->get(['id', 'topic_name', 'hours', 'objective', 'bloom_level'])
+                ->map(fn (SyllabusTopic $topic): array => [
+                    'syllabus_topic_id' => $topic->id,
+                    'name' => $topic->topic_name,
+                    'hours' => $topic->hours,
+                    'objective' => $topic->objective,
+                    'bloom_level' => $topic->bloom_level?->value,
+                ])
+                ->all();
+
+            if ($termTopics === []) {
+                throw ValidationException::withMessages([
+                    $term => [sprintf('The syllabus needs at least one %s topic before generating both exams.', $term)],
+                ]);
+            }
+
+            $bloomLevels = $validated[$term]['bloom_levels']
+                ?? $document->suggested_bloom_levels_by_term[$term]
+                ?? $suggestions->bloomLevels($termTopics);
+            $this->validateUniqueBloomLevels($bloomLevels);
+            if (count($bloomLevels) < 3 || count($bloomLevels) > 6) {
+                throw ValidationException::withMessages([
+                    "$term.bloom_levels" => ['Select at least three distinct Bloom levels.'],
+                ]);
+            }
+
+            $overrides = $validated[$term]['question_type_percentages'] ?? null;
+            if ($overrides !== null && array_diff(array_keys($overrides), ExamSuggestionService::QUESTION_TYPES) !== []) {
+                throw ValidationException::withMessages([
+                    "$term.question_type_percentages" => ['Only Multiple Choice, True/False, Identification, and Essay are supported.'],
+                ]);
+            }
+            if ($overrides !== null && array_sum($overrides) <= 0) {
+                throw ValidationException::withMessages([
+                    "$term.question_type_percentages" => ['Question-type percentages must contain a positive value.'],
+                ]);
+            }
+
+            $percentages = $suggestions->questionTypePercentages(
+                $overrides ?? ($document->suggested_question_type_percentages_by_term[$term] ?? null),
+                $termTopics,
+            );
+            $totalItems = (int) $validated[$term]['total_items'];
+            $topics = array_map(fn (array $topic): array => [
+                'syllabus_topic_id' => $topic['syllabus_topic_id'],
+                'name' => $topic['name'],
+                'hours' => $topic['hours'],
+            ], $termTopics);
+            $weights = $this->buildTopicWeights($topics);
+            $runs[$term] = [
+                'total_items' => $totalItems,
+                'topics' => $topics,
+                'bloom_distribution' => $this->buildEqualDistribution($bloomLevels),
+                'topic_weights' => $weights,
+                'topic_item_counts' => $this->allocateByLargestRemainder($weights, $totalItems),
+                'question_type_percentages' => $percentages,
+                'question_type_distribution' => $suggestions->counts($percentages, $totalItems),
+            ];
+        }
+
+        return DB::transaction(function () use ($project, $runs): JsonResponse {
+            $created = [];
+            foreach (['midterm', 'final'] as $term) {
+                $plan = $runs[$term];
+                $tosRun = $this->createRunFromTopics(
+                    $project,
+                    $plan['total_items'],
+                    $plan['topics'],
+                    $plan['bloom_distribution'],
+                    $plan['topic_weights'],
+                    $plan['topic_item_counts'],
+                    $term,
+                    $plan['question_type_distribution'],
+                );
+                $created[$term] = [
+                    'tos_run' => $tosRun,
+                    'question_type_percentages' => $plan['question_type_percentages'],
+                    'question_type_distribution' => $plan['question_type_distribution'],
+                ];
+            }
+
+            return response()->json(['data' => $created], 201);
+        });
     }
 
     public function show(Project $project, TosRun $tosRun): JsonResponse
     {
         return response()->json([
             'data' => $tosRun->load([
-                'allocations' => fn ($query) => $query->orderBy('topic_name')->orderBy('bloom_level'),
+                'allocations' => fn ($query) => $query->orderBy('id'),
             ]),
         ]);
     }
@@ -200,7 +319,9 @@ class TosController extends Controller
         array $topics,
         array $bloomDistribution,
         array $topicWeights,
-        array $topicItemCounts
+        array $topicItemCounts,
+        ?string $term = null,
+        ?array $questionTypeDistribution = null
     ): TosRun {
         $bloomLevels = array_keys($bloomDistribution);
 
@@ -245,6 +366,7 @@ class TosController extends Controller
                 $bloomBudget[$bloomLevel] -= $itemCount;
 
                 $allocationRows[] = [
+                    'syllabus_topic_id' => $topic['syllabus_topic_id'] ?? null,
                     'topic_name' => $topic['name'],
                     'topic_hours' => (float) $topic['hours'],
                     'topic_weight' => $topicWeights[$index],
@@ -263,11 +385,13 @@ class TosController extends Controller
             ));
         }
 
-        return DB::transaction(function () use ($project, $totalItems, $topics, $bloomDistribution, $allocationRows): TosRun {
+        return DB::transaction(function () use ($project, $totalItems, $topics, $bloomDistribution, $allocationRows, $term, $questionTypeDistribution): TosRun {
             $run = $project->tosRuns()->create([
                 'total_items' => $totalItems,
                 'topics' => $topics,
                 'bloom_distribution' => $bloomDistribution,
+                'term' => $term,
+                'question_type_distribution' => $questionTypeDistribution,
             ]);
 
             $run->allocations()->createMany($allocationRows);

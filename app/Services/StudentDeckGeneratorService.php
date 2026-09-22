@@ -113,6 +113,7 @@ class StudentDeckGeneratorService
             '- multiple_choice: options = exactly 4 strings; answer_key = A, B, C, or D.',
             '- true_false: options = ["True","False"]; answer_key = "True" or "False".',
             '- identification: options = []; answer_key = the expected answer text.',
+            '- essay: options = []; answer_key = a concise model answer or grading rubric grounded in the materials.',
             sprintf('Generate this distribution: %s.', $typeSpec),
             'Learning materials:',
             $contextText,
@@ -225,6 +226,9 @@ class StudentDeckGeneratorService
             QuestionType::MultipleChoice->value => $this->normalizeMultipleChoice($options, $answerKey),
             QuestionType::TrueFalse->value => $this->normalizeTrueFalse($options, $answerKey),
             QuestionType::Identification->value => strlen(trim($answerKey)) > 0
+                ? ['type' => $type, 'options' => [], 'answer_key' => trim($answerKey)]
+                : null,
+            QuestionType::Essay->value => strlen(trim($answerKey)) > 0
                 ? ['type' => $type, 'options' => [], 'answer_key' => trim($answerKey)]
                 : null,
             default => null,

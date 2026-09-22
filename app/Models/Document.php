@@ -28,6 +28,11 @@ class Document extends Model
         'kind',
         'status',
         'failed_reason',
+        'week_number',
+        'syllabus_topic_id',
+        'suggested_bloom_levels',
+        'suggested_bloom_levels_by_term',
+        'suggested_question_type_percentages_by_term',
     ];
 
     protected function casts(): array
@@ -35,6 +40,11 @@ class Document extends Model
         return [
             'kind' => DocumentKind::class,
             'status' => DocumentStatus::class,
+            'week_number' => 'integer',
+            'syllabus_topic_id' => 'integer',
+            'suggested_bloom_levels' => 'array',
+            'suggested_bloom_levels_by_term' => 'array',
+            'suggested_question_type_percentages_by_term' => 'array',
         ];
     }
 
@@ -56,6 +66,11 @@ class Document extends Model
     public function syllabusTopics(): HasMany
     {
         return $this->hasMany(SyllabusTopic::class);
+    }
+
+    public function syllabusTopic(): BelongsTo
+    {
+        return $this->belongsTo(SyllabusTopic::class);
     }
 
     public function transitionTo(DocumentStatus $status, ?string $failedReason = null): void

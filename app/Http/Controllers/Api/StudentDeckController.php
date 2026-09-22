@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\StudentDeck;
 use App\Services\StudentDeckGeneratorService;
+use App\Services\StudentEssayGrader;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\JsonResponse;
@@ -14,6 +15,29 @@ use Illuminate\Validation\ValidationException;
 
 class StudentDeckController extends Controller
 {
+    public function gradeEssay(Request $request, StudentDeck $studentDeck, StudentEssayGrader $grader): JsonResponse
+    {
+        set_time_limit(60);
+        $this->authorizeOwner($request, $studentDeck);
+        $validated = $request->validate([
+            'sequence' => ['required', 'integer', 'min:1'],
+            'answer' => ['required', 'string', 'max:10000'],
+        ]);
+
+        $question = collect($studentDeck->questions ?? [])->first(
+            fn ($item): bool => (int) ($item['sequence'] ?? 0) === (int) $validated['sequence']
+        );
+        if (! is_array($question) || ($question['question_type'] ?? null) !== 'essay') {
+            return response()->json(['message' => 'Essay question not found in this deck.'], 404);
+        }
+
+        return response()->json(['data' => $grader->grade(
+            (string) $question['question_text'],
+            (string) $question['answer_key'],
+            $validated['answer'],
+        )]);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $decks = StudentDeck::query()
@@ -43,6 +67,7 @@ class StudentDeckController extends Controller
             'question_type_distribution.multiple_choice' => ['sometimes', 'integer', 'min:0'],
             'question_type_distribution.true_false' => ['sometimes', 'integer', 'min:0'],
             'question_type_distribution.identification' => ['sometimes', 'integer', 'min:0'],
+            'question_type_distribution.essay' => ['sometimes', 'integer', 'min:0'],
             'materials' => ['required', 'array', 'min:1', 'max:5'],
             'materials.*' => ['required', 'file', 'max:20480'], // 20 MB per file
         ]);

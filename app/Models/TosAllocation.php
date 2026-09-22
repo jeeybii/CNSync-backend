@@ -15,6 +15,7 @@ class TosAllocation extends Model
         'topic_weight',
         'bloom_level',
         'item_count',
+        'syllabus_topic_id',
     ];
 
     protected function casts(): array
