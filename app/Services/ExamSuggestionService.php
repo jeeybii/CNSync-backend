@@ -6,7 +6,16 @@ use App\Enums\BloomLevel;
 
 class ExamSuggestionService
 {
-    public const QUESTION_TYPES = ['multiple_choice', 'true_false', 'identification', 'essay'];
+    public const QUESTION_TYPES = ['multiple_choice', 'true_false', 'identification', 'essay', 'matching_type'];
+
+    public const BLOOM_QUESTION_TYPES = [
+        'remembering' => ['identification', 'multiple_choice', 'matching_type'],
+        'understanding' => ['multiple_choice', 'matching_type', 'true_false'],
+        'applying' => ['multiple_choice', 'essay'],
+        'analyzing' => ['multiple_choice', 'essay'],
+        'evaluating' => ['essay', 'multiple_choice'],
+        'creating' => ['essay'],
+    ];
 
     /**
      * @param  array<int, array<string, mixed>>  $topics
@@ -62,19 +71,13 @@ class ExamSuggestionService
         }
 
         if (array_sum($weights) <= 0) {
-            $byBloom = [
-                'remembering' => [40, 30, 30, 0],
-                'understanding' => [50, 20, 20, 10],
-                'applying' => [40, 20, 20, 20],
-                'analyzing' => [30, 10, 10, 50],
-                'evaluating' => [20, 10, 10, 60],
-                'creating' => [10, 0, 0, 90],
-            ];
             foreach ($topics as $topic) {
                 $hours = max(0.0, (float) ($topic['hours'] ?? 1));
-                $shares = $byBloom[$topic['bloom_level'] ?? 'understanding'] ?? $byBloom['understanding'];
-                foreach (self::QUESTION_TYPES as $index => $type) {
-                    $weights[$type] += $shares[$index] * $hours;
+                $types = self::BLOOM_QUESTION_TYPES[$topic['bloom_level'] ?? 'understanding']
+                    ?? self::BLOOM_QUESTION_TYPES['understanding'];
+                $share = 100 / count($types);
+                foreach ($types as $type) {
+                    $weights[$type] += $share * $hours;
                 }
             }
         }

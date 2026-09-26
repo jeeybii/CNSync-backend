@@ -47,7 +47,8 @@ class SyllabusExtractionService
             'Return a JSON object with keys "topics", "suggested_bloom_levels_by_term", and "suggested_question_type_percentages_by_term".',
             'Give every topic its own most appropriate bloom_level based on its objective and context.',
             'suggested_bloom_levels_by_term must contain midterm and final arrays of useful Bloom levels; include at least three distinct levels per term, adding suitable levels when topic levels contain fewer than three.',
-            'suggested_question_type_percentages_by_term must contain midterm and final objects, each with numeric percentages for multiple_choice, true_false, identification, and essay that sum to 100.',
+            'suggested_question_type_percentages_by_term must contain midterm and final objects, each with numeric percentages for multiple_choice, true_false, identification, essay, and matching_type that sum to 100.',
+            'Use this Bloom-to-question-type policy: remembering = identification, multiple_choice, matching_type; understanding = multiple_choice, matching_type, true_false; applying = multiple_choice, essay; analyzing = multiple_choice, essay; evaluating = essay, multiple_choice; creating = essay.',
             'Recommend question-type percentages separately for each term using its topic objectives/context and the suggested Bloom levels; do not use the same generic mix for both terms unless the content warrants it.',
             'topics must be top-level syllabus topics only, not their subtopics.',
             'Keep topics in exactly the same reading order as the syllabus; do not alphabetize, group, or reorder them by term or week.',
@@ -71,8 +72,7 @@ class SyllabusExtractionService
             throw new RuntimeException('Gemini returned an empty syllabus extraction payload.');
         }
 
-        /** @var mixed $parsed */
-        $parsed = json_decode($jsonText, true);
+        $parsed = $this->decodeJsonPayload($jsonText);
         if (! is_array($parsed) || ! isset($parsed['topics']) || ! is_array($parsed['topics'])) {
             throw new RuntimeException('Syllabus extraction response is not valid JSON schema.');
         }
@@ -195,6 +195,8 @@ class SyllabusExtractionService
                         'generationConfig' => [
                             'temperature' => 0.1,
                             'responseMimeType' => 'application/json',
+                            'maxOutputTokens' => 65536,
+                            'responseSchema' => $this->responseSchema(),
                         ],
                     ]);
 
@@ -217,5 +219,80 @@ class SyllabusExtractionService
         }
 
         throw new RuntimeException('Gemini request failed without a response.');
+    }
+
+    /**
+     * Gemini normally honors responseMimeType, but some model responses still
+     * wrap JSON in a fenced block. Accept that harmless wrapper while keeping
+     * the application-level schema validation below strict.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function decodeJsonPayload(string $jsonText): ?array
+    {
+        $jsonText = trim($jsonText);
+        if (preg_match('/^```(?:json)?\s*(.*?)\s*```$/is', $jsonText, $matches) === 1) {
+            $jsonText = trim($matches[1]);
+        }
+
+        $decoded = json_decode($jsonText, true);
+
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /** @return array<string, mixed> */
+    private function responseSchema(): array
+    {
+        $questionTypePercentages = [
+            'type' => 'OBJECT',
+            'properties' => array_fill_keys(
+                ExamSuggestionService::QUESTION_TYPES,
+                ['type' => 'NUMBER'],
+            ),
+            'required' => ExamSuggestionService::QUESTION_TYPES,
+        ];
+
+        return [
+            'type' => 'OBJECT',
+            'properties' => [
+                'topics' => [
+                    'type' => 'ARRAY',
+                    'items' => [
+                        'type' => 'OBJECT',
+                        'properties' => [
+                            'topic_name' => ['type' => 'STRING'],
+                            'hours' => ['type' => 'NUMBER'],
+                            'objective' => ['type' => 'STRING', 'nullable' => true],
+                            'bloom_level' => ['type' => 'STRING', 'enum' => BloomLevel::values()],
+                            'confidence' => ['type' => 'NUMBER', 'minimum' => 0, 'maximum' => 1],
+                            'term' => ['type' => 'STRING', 'enum' => ['midterm', 'final']],
+                            'week_number' => ['type' => 'INTEGER', 'minimum' => 1],
+                        ],
+                        'required' => ['topic_name', 'hours', 'bloom_level', 'term', 'week_number'],
+                    ],
+                ],
+                'suggested_bloom_levels_by_term' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'midterm' => ['type' => 'ARRAY', 'items' => ['type' => 'STRING', 'enum' => BloomLevel::values()]],
+                        'final' => ['type' => 'ARRAY', 'items' => ['type' => 'STRING', 'enum' => BloomLevel::values()]],
+                    ],
+                    'required' => ['midterm', 'final'],
+                ],
+                'suggested_question_type_percentages_by_term' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'midterm' => $questionTypePercentages,
+                        'final' => $questionTypePercentages,
+                    ],
+                    'required' => ['midterm', 'final'],
+                ],
+            ],
+            'required' => [
+                'topics',
+                'suggested_bloom_levels_by_term',
+                'suggested_question_type_percentages_by_term',
+            ],
+        ];
     }
 }

@@ -34,12 +34,29 @@ test('question type suggestions normalize percentages and allocate exact item co
         'true_false' => 20,
         'identification' => 0,
         'essay' => 30,
+        'matching_type' => 0,
     ]);
     expect($service->counts($percentages, 7))->toBe([
         'multiple_choice' => 4,
         'true_false' => 1,
         'identification' => 0,
         'essay' => 2,
+        'matching_type' => 0,
     ]);
     expect(array_sum($service->counts($percentages, 1)))->toBe(1);
 });
+
+test('question type suggestions follow the approved bloom matrix', function (string $bloom, array $expectedTypes) {
+    $service = new ExamSuggestionService;
+    $percentages = $service->questionTypePercentages(null, [['bloom_level' => $bloom, 'hours' => 1]]);
+
+    expect(array_keys(array_filter($percentages)))->toEqualCanonicalizing($expectedTypes)
+        ->and(array_sum($percentages))->toBe(100);
+})->with([
+    'remembering' => ['remembering', ['identification', 'multiple_choice', 'matching_type']],
+    'understanding' => ['understanding', ['multiple_choice', 'matching_type', 'true_false']],
+    'applying' => ['applying', ['multiple_choice', 'essay']],
+    'analyzing' => ['analyzing', ['multiple_choice', 'essay']],
+    'evaluating' => ['evaluating', ['essay', 'multiple_choice']],
+    'creating' => ['creating', ['essay']],
+]);

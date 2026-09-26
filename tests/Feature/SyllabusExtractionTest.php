@@ -212,3 +212,53 @@ test('extraction assigns one week per main topic and suggests three whole-syllab
         ->assertJsonPath('data.2.week_number', 3)
         ->assertJsonPath('data.2.term', 'final');
 });
+
+test('syllabus extraction requests structured json and accepts a fenced json payload', function () {
+    config()->set('services.gemini.api_key', 'test-key');
+    Http::fake(['*' => Http::response(['candidates' => [[
+        'content' => ['parts' => [['text' => "```json\n".json_encode([
+            'topics' => [[
+                'topic_name' => 'Network Fundamentals',
+                'hours' => 2,
+                'objective' => null,
+                'bloom_level' => 'understanding',
+                'confidence' => 0.9,
+                'term' => 'midterm',
+                'week_number' => 1,
+            ]],
+            'suggested_bloom_levels_by_term' => [
+                'midterm' => ['remembering', 'understanding', 'applying'],
+                'final' => ['analyzing', 'evaluating', 'creating'],
+            ],
+            'suggested_question_type_percentages_by_term' => [
+                'midterm' => ['multiple_choice' => 40, 'true_false' => 20, 'identification' => 20, 'essay' => 0, 'matching_type' => 20],
+                'final' => ['multiple_choice' => 20, 'true_false' => 0, 'identification' => 0, 'essay' => 80, 'matching_type' => 0],
+            ],
+        ], JSON_THROW_ON_ERROR)."\n```"]]],
+    ]]], 200)]);
+
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    $document = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::Analyzed,
+    ]);
+    ExtractedChunk::query()->create([
+        'document_id' => $document->id,
+        'chunk_index' => 0,
+        'content' => 'MIDTERM Network Fundamentals',
+        'page_number' => 1,
+    ]);
+
+    $this->postJson("/api/projects/{$project->id}/documents/{$document->id}/extract-syllabus", [], syllabusAuthHeader($user))
+        ->assertOk()
+        ->assertJsonPath('data.0.topic_name', 'Network Fundamentals');
+
+    Http::assertSent(function ($request): bool {
+        $config = $request->data()['generationConfig'] ?? [];
+
+        return ($config['responseMimeType'] ?? null) === 'application/json'
+            && ($config['maxOutputTokens'] ?? null) === 65536
+            && data_get($config, 'responseSchema.properties.topics.type') === 'ARRAY';
+    });
+});
