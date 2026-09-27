@@ -119,10 +119,14 @@ class TosController extends Controller
             'final' => ['required', 'array'],
             'midterm.total_items' => ['required', 'integer', 'min:1', 'max:500'],
             'final.total_items' => ['required', 'integer', 'min:1', 'max:500'],
-            'midterm.bloom_levels' => ['sometimes', 'array', 'min:3', 'max:6'],
-            'final.bloom_levels' => ['sometimes', 'array', 'min:3', 'max:6'],
+            'midterm.bloom_levels' => ['sometimes', 'array', 'size:3'],
+            'final.bloom_levels' => ['sometimes', 'array', 'size:3'],
             'midterm.bloom_levels.*' => ['string', Rule::in(BloomLevel::values())],
             'final.bloom_levels.*' => ['string', Rule::in(BloomLevel::values())],
+            'midterm.bloom_percentages' => ['sometimes', 'array'],
+            'final.bloom_percentages' => ['sometimes', 'array'],
+            'midterm.bloom_percentages.*' => ['numeric', 'min:0', 'max:100'],
+            'final.bloom_percentages.*' => ['numeric', 'min:0', 'max:100'],
             'midterm.question_type_percentages' => ['sometimes', 'array'],
             'final.question_type_percentages' => ['sometimes', 'array'],
             'midterm.question_type_percentages.*' => ['numeric', 'min:0'],
@@ -158,11 +162,16 @@ class TosController extends Controller
                 ?? $document->suggested_bloom_levels_by_term[$term]
                 ?? $suggestions->bloomLevels($termTopics);
             $this->validateUniqueBloomLevels($bloomLevels);
-            if (count($bloomLevels) < 3 || count($bloomLevels) > 6) {
+            if (count($bloomLevels) !== 3) {
                 throw ValidationException::withMessages([
-                    "$term.bloom_levels" => ['Select at least three distinct Bloom levels.'],
+                    "$term.bloom_levels" => ['Select exactly three distinct Bloom levels.'],
                 ]);
             }
+
+            $bloomPercentages = $validated[$term]['bloom_percentages'] ?? null;
+            $bloomDistribution = $bloomPercentages === null
+                ? $this->buildEqualDistribution($bloomLevels)
+                : $this->buildPercentageDistribution($term, $bloomLevels, $bloomPercentages);
 
             $overrides = $validated[$term]['question_type_percentages'] ?? null;
             if ($overrides !== null && array_diff(array_keys($overrides), ExamSuggestionService::QUESTION_TYPES) !== []) {
@@ -190,7 +199,11 @@ class TosController extends Controller
             $runs[$term] = [
                 'total_items' => $totalItems,
                 'topics' => $topics,
-                'bloom_distribution' => $this->buildEqualDistribution($bloomLevels),
+                'bloom_distribution' => $bloomDistribution,
+                'bloom_percentages' => array_map(
+                    static fn (float $weight): float => $weight * 100,
+                    $bloomDistribution,
+                ),
                 'topic_weights' => $weights,
                 'topic_item_counts' => $this->allocateByLargestRemainder($weights, $totalItems),
                 'question_type_percentages' => $percentages,
@@ -216,6 +229,7 @@ class TosController extends Controller
                     'tos_run' => $tosRun,
                     'question_type_percentages' => $plan['question_type_percentages'],
                     'question_type_distribution' => $plan['question_type_distribution'],
+                    'bloom_percentages' => $plan['bloom_percentages'],
                 ];
             }
 
@@ -243,6 +257,42 @@ class TosController extends Controller
         $weight = 1.0 / count($levels);
 
         return array_fill_keys($levels, $weight);
+    }
+
+    /**
+     * @param  array<int, string>  $levels
+     * @param  array<string, int|float>  $percentages
+     * @return array<string, float>
+     */
+    private function buildPercentageDistribution(string $term, array $levels, array $percentages): array
+    {
+        $unknown = array_diff(array_keys($percentages), BloomLevel::values());
+        if ($unknown !== []) {
+            throw ValidationException::withMessages([
+                "$term.bloom_percentages" => ['Bloom percentages contain an unsupported level.'],
+            ]);
+        }
+
+        $unselected = array_diff(array_keys(array_filter($percentages, static fn ($value): bool => (float) $value > 0)), $levels);
+        if ($unselected !== []) {
+            throw ValidationException::withMessages([
+                "$term.bloom_percentages" => ['Bloom percentages may only be assigned to selected levels.'],
+            ]);
+        }
+
+        $total = array_sum(array_map('floatval', $percentages));
+        if (abs($total - 100.0) > 0.001) {
+            throw ValidationException::withMessages([
+                "$term.bloom_percentages" => ['Bloom percentages must total exactly 100.'],
+            ]);
+        }
+
+        $distribution = [];
+        foreach ($levels as $level) {
+            $distribution[$level] = (float) ($percentages[$level] ?? 0) / 100;
+        }
+
+        return $distribution;
     }
 
     /**

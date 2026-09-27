@@ -224,6 +224,12 @@ test('paired tos creates both terms with independent item counts and overridable
         'midterm' => ['total_items' => 10],
         'final' => [
             'total_items' => 7,
+            'bloom_levels' => ['analyzing', 'evaluating', 'creating'],
+            'bloom_percentages' => [
+                'analyzing' => 50,
+                'evaluating' => 30,
+                'creating' => 20,
+            ],
             'question_type_percentages' => [
                 'multiple_choice' => 0,
                 'true_false' => 0,
@@ -238,7 +244,83 @@ test('paired tos creates both terms with independent item counts and overridable
         ->assertJsonPath('data.midterm.question_type_distribution.multiple_choice', 5)
         ->assertJsonPath('data.midterm.question_type_distribution.true_false', 2)
         ->assertJsonPath('data.midterm.question_type_distribution.essay', 3)
-        ->assertJsonPath('data.final.question_type_distribution.essay', 7);
+        ->assertJsonPath('data.final.question_type_distribution.essay', 7)
+        ->assertJsonPath('data.final.bloom_percentages.analyzing', 50)
+        ->assertJsonPath('data.final.tos_run.bloom_distribution.evaluating', 0.3);
 
     expect($project->tosRuns()->count())->toBe(2);
+});
+
+test('paired tos rejects bloom percentages that do not total one hundred', function () {
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    $syllabus = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::TosReady,
+        'suggested_bloom_levels_by_term' => [
+            'midterm' => ['remembering', 'understanding', 'applying'],
+            'final' => ['analyzing', 'evaluating', 'creating'],
+        ],
+    ]);
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Material]);
+    foreach (['midterm', 'final'] as $position => $term) {
+        SyllabusTopic::query()->create([
+            'project_id' => $project->id,
+            'document_id' => $syllabus->id,
+            'topic_name' => ucfirst($term).' Topic',
+            'hours' => 2,
+            'term' => $term,
+            'position' => $position + 1,
+            'bloom_level' => $term === 'midterm' ? 'understanding' : 'analyzing',
+        ]);
+    }
+
+    $this->postJson("/api/projects/{$project->id}/tos-runs/pair/from-syllabus", [
+        'syllabus_document_id' => $syllabus->id,
+        'midterm' => [
+            'total_items' => 10,
+            'bloom_levels' => ['remembering', 'understanding', 'applying'],
+            'bloom_percentages' => ['remembering' => 40, 'understanding' => 30, 'applying' => 20],
+        ],
+        'final' => ['total_items' => 10],
+    ], facultyTosAuthHeader($user))
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('midterm.bloom_percentages');
+});
+
+test('paired tos requires exactly three bloom levels per term', function () {
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    $syllabus = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::TosReady,
+        'suggested_bloom_levels_by_term' => [
+            'midterm' => ['remembering', 'understanding', 'applying'],
+            'final' => ['analyzing', 'evaluating', 'creating'],
+        ],
+    ]);
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Material]);
+    foreach (['midterm', 'final'] as $position => $term) {
+        SyllabusTopic::query()->create([
+            'project_id' => $project->id,
+            'document_id' => $syllabus->id,
+            'topic_name' => ucfirst($term).' Topic',
+            'hours' => 2,
+            'term' => $term,
+            'position' => $position + 1,
+            'bloom_level' => $term === 'midterm' ? 'understanding' : 'analyzing',
+        ]);
+    }
+
+    $this->postJson("/api/projects/{$project->id}/tos-runs/pair/from-syllabus", [
+        'syllabus_document_id' => $syllabus->id,
+        'midterm' => [
+            'total_items' => 10,
+            'bloom_levels' => ['remembering', 'understanding', 'applying', 'analyzing'],
+            'bloom_percentages' => ['remembering' => 25, 'understanding' => 25, 'applying' => 25, 'analyzing' => 25],
+        ],
+        'final' => ['total_items' => 10],
+    ], facultyTosAuthHeader($user))
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('midterm.bloom_levels');
 });
