@@ -6,6 +6,7 @@ use App\Enums\DocumentKind;
 use App\Enums\DocumentStatus;
 use App\Enums\QuestionType;
 use App\Http\Controllers\Controller;
+use App\Jobs\GenerateQuestionRunJob;
 use App\Models\ActivityLog;
 use App\Models\Document;
 use App\Models\Project;
@@ -19,6 +20,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class QuestionRunController extends Controller
@@ -60,25 +63,74 @@ class QuestionRunController extends Controller
         );
     }
 
+    public function enqueue(Request $request, Project $project): JsonResponse
+    {
+        $validated = $request->validate([
+            'tos_run_id' => ['nullable', 'integer'],
+            'question_type_distribution' => ['sometimes', 'array'],
+            'question_type_distribution.multiple_choice' => ['sometimes', 'integer', 'min:0'],
+            'question_type_distribution.true_false' => ['sometimes', 'integer', 'min:0'],
+            'question_type_distribution.identification' => ['sometimes', 'integer', 'min:0'],
+            'question_type_distribution.essay' => ['sometimes', 'integer', 'min:0'],
+            'question_type_distribution.matching_type' => ['sometimes', 'integer', 'min:0'],
+        ]);
+
+        $tosRun = $this->resolveTosRun($project, $validated['tos_run_id'] ?? null);
+        $distribution = $validated['question_type_distribution'] ?? $tosRun->question_type_distribution;
+        $questionRun = $project->questionRuns()
+            ->where('tos_run_id', $tosRun->id)
+            ->whereIn('status', ['processing', 'completed', 'failed'])
+            ->latest('id')
+            ->first();
+        $shouldDispatch = false;
+
+        if ($questionRun === null) {
+            $questionRun = $this->createPendingQuestionRun($project, $tosRun, $distribution);
+            $shouldDispatch = true;
+        }
+
+        if ($questionRun->status === 'failed') {
+            $questionRun->update(['status' => 'processing', 'failed_reason' => null]);
+            $shouldDispatch = true;
+        }
+
+        if ($shouldDispatch) {
+            GenerateQuestionRunJob::dispatch(
+                $questionRun->id,
+                $project->id,
+                $tosRun->id,
+                $request->user()->id,
+                $distribution,
+                $request->ip(),
+            );
+        }
+
+        return response()->json(['data' => $questionRun->load('tosRun')], 202);
+    }
+
     public function storePair(Request $request, Project $project, GeminiQuestionGenerator $generator): JsonResponse
     {
         set_time_limit(0);
 
         $validated = $request->validate([
-            'midterm_tos_run_id' => ['required', 'integer'],
-            'final_tos_run_id' => ['required', 'integer', 'different:midterm_tos_run_id'],
+            'midterm_tos_run_id' => ['required_without:final_tos_run_id', 'integer'],
+            'final_tos_run_id' => ['required_without:midterm_tos_run_id', 'integer', 'different:midterm_tos_run_id'],
         ]);
 
-        $midterm = $this->resolveTosRun($project, $validated['midterm_tos_run_id']);
-        $final = $this->resolveTosRun($project, $validated['final_tos_run_id']);
-        if ($midterm->term !== 'midterm' || $final->term !== 'final') {
-            throw ValidationException::withMessages([
-                'tos_runs' => ['Provide one Midterm TOS and one Finals TOS.'],
-            ]);
+        $runs = [];
+        foreach (['midterm', 'final'] as $term) {
+            $key = "{$term}_tos_run_id";
+            if (! isset($validated[$key])) {
+                continue;
+            }
+            $runs[$term] = $this->resolveTosRun($project, $validated[$key]);
+            if ($runs[$term]->term !== $term) {
+                throw ValidationException::withMessages([$key => [sprintf('Provide a %s TOS run.', ucfirst($term))]]);
+            }
         }
 
         $generated = [];
-        foreach (['midterm' => $midterm, 'final' => $final] as $term => $tosRun) {
+        foreach ($runs as $term => $tosRun) {
             $existing = $project->questionRuns()
                 ->where('tos_run_id', $tosRun->id)
                 ->where('status', 'completed')
@@ -111,15 +163,70 @@ class QuestionRunController extends Controller
         return response()->json(['data' => $generated], 201);
     }
 
+    public function enqueuePair(Request $request, Project $project): JsonResponse
+    {
+        $validated = $request->validate([
+            'midterm_tos_run_id' => ['required_without:final_tos_run_id', 'integer'],
+            'final_tos_run_id' => ['required_without:midterm_tos_run_id', 'integer', 'different:midterm_tos_run_id'],
+        ]);
+
+        $runs = [];
+        foreach (['midterm', 'final'] as $term) {
+            $key = "{$term}_tos_run_id";
+            if (! isset($validated[$key])) {
+                continue;
+            }
+
+            $tosRun = $this->resolveTosRun($project, $validated[$key]);
+            if ($tosRun->term !== $term) {
+                throw ValidationException::withMessages([$key => [sprintf('Provide a %s TOS run.', ucfirst($term))]]);
+            }
+
+            $questionRun = $project->questionRuns()
+                ->where('tos_run_id', $tosRun->id)
+                ->whereIn('status', ['processing', 'completed', 'failed'])
+                ->with(['items' => fn ($query) => $query->orderBy('sequence'), 'tosRun'])
+                ->latest('id')
+                ->first();
+            $shouldDispatch = false;
+
+            if ($questionRun === null) {
+                $questionRun = $this->createPendingQuestionRun($project, $tosRun, $tosRun->question_type_distribution);
+                $shouldDispatch = true;
+            }
+
+            if ($questionRun->status === 'failed') {
+                $questionRun->update(['status' => 'processing', 'failed_reason' => null]);
+                $shouldDispatch = true;
+            }
+
+            if ($shouldDispatch) {
+                GenerateQuestionRunJob::dispatch(
+                    $questionRun->id,
+                    $project->id,
+                    $tosRun->id,
+                    $request->user()->id,
+                    $tosRun->question_type_distribution,
+                    $request->ip(),
+                );
+            }
+
+            $runs[$term] = $questionRun->toArray();
+        }
+
+        return response()->json(['data' => $runs], 202);
+    }
+
     /**
      * @param  array<string, int>|null  $distribution
      */
-    private function generateForTosRun(
+    public function generateForTosRun(
         Request $request,
         Project $project,
         TosRun $tosRun,
         ?array $distribution,
-        GeminiQuestionGenerator $generator
+        GeminiQuestionGenerator $generator,
+        ?QuestionRun $existingQuestionRun = null,
     ): JsonResponse {
         $requestedItems = (int) $tosRun->allocations->sum('item_count');
         $questionTypePlan = $this->resolveQuestionTypePlan($requestedItems, $distribution);
@@ -129,16 +236,20 @@ class QuestionRunController extends Controller
             ->with('extractedChunks')
             ->get();
 
-        if ($documents->isEmpty() || ! $this->hasRequiredDocumentKinds($documents)) {
+        if ($documents->isEmpty() || ! $this->hasSyllabus($documents)) {
             return response()->json([
-                'message' => 'Question generation requires one analyzed syllabus and at least one analyzed learning material.',
+                'message' => 'Question generation requires an analyzed syllabus.',
             ], 422);
         }
 
-        // Only pull context from learning materials — the syllabus is used for TOS structure only,
-        // not as a question source (prevents "What is the course title?" type questions).
+        // Prefer learning materials when supplied. Without them, generation
+        // falls back to the syllabus text plus the extracted topic/objective.
         $materialDocuments = $documents
             ->filter(fn (Document $document): bool => $document->kind === DocumentKind::Material)
+            ->values()
+            ->all();
+        $syllabusDocuments = $documents
+            ->filter(fn (Document $document): bool => $document->kind === DocumentKind::Syllabus)
             ->values()
             ->all();
 
@@ -153,14 +264,21 @@ class QuestionRunController extends Controller
             ->keyBy('id');
         $syllabusTopicsByName = $syllabusTopics->keyBy('topic_name');
 
-        $questionRun = $project->questionRuns()->create([
+        $questionRun = $existingQuestionRun ?? $project->questionRuns()->create([
             'tos_run_id' => $tosRun->id,
             'requested_items' => $requestedItems,
             'status' => 'processing',
         ]);
+        $questionRun->update(['status' => 'processing', 'failed_reason' => null]);
+        $generationStartedAt = hrtime(true);
 
-        $sequence = 1;
-        $createdItems = [];
+        $persistedItems = $questionRun->items()->orderBy('sequence')->get();
+        $sequence = $persistedItems->count() + 1;
+        $createdItems = $persistedItems->map(fn ($item): array => [
+            'question_text' => $item->question_text,
+            'topic_name' => $item->topic_name,
+            'question_type' => $item->question_type,
+        ])->all();
 
         try {
             $requests = [];
@@ -179,6 +297,9 @@ class QuestionRunController extends Controller
                         : ($material->week_number === null || $material->week_number === $syllabusTopic?->week_number),
                 ));
                 $contexts = $generator->retrieveContext($allocation->topic_name, $topicMaterials);
+                if ($contexts === []) {
+                    $contexts = $generator->retrieveContext($allocation->topic_name, $syllabusDocuments);
+                }
 
                 // When no learning material explicitly mentions this topic, supplement with the
                 // syllabus topic objective as a subject-scope guide so the AI knows what the
@@ -218,76 +339,171 @@ class QuestionRunController extends Controller
                 }
             }
 
-            $generatedByRequest = [];
-            try {
-                $generatedByRequest = $generator->generateBatch($requests, $contextsByRequestId);
-            } catch (\Throwable) {
-                // Batch generation is a cost/latency optimization.
-                // If the model returns non-batch schema, fallback to per-item generation.
-                $generatedByRequest = [];
-            }
+            $remainingRequests = array_slice($requests, $persistedItems->count());
+            // Ollama produces one question per request, so persist each valid
+            // result immediately. Remote providers can still use larger batches.
+            $batchSize = strtolower((string) config('services.ai.provider', 'gemini')) === 'ollama'
+                ? 1
+                : max(1, (int) config('services.ai.question_batch_size', 5));
 
-            foreach ($requests as $requestSpec) {
-                $requestId = $requestSpec['id'];
-                $generated = $generatedByRequest[$requestId] ?? null;
-
-                // Regenerate only missing/invalid rows to keep API costs lower than all-single mode.
-                if (! is_array($generated)) {
-                    $generated = $generator->generateOne(
-                        $requestSpec['topic_name'],
-                        $requestSpec['bloom_level'],
-                        $questionTypesByRequestId[$requestId],
-                        $contextsByRequestId[$requestId],
-                    );
+            foreach (array_chunk($remainingRequests, $batchSize) as $requestBatch) {
+                if ($this->isCancelled($questionRun)) {
+                    return $this->cancelledResponse($questionRun);
                 }
 
-                $createdItems[] = [
-                    'topic_name' => $requestSpec['topic_name'],
-                    'bloom_level' => $requestSpec['bloom_level'],
-                    'question_type' => $questionTypesByRequestId[$requestId],
-                    'sequence' => $sequence++,
-                    'question_text' => $generated['question_text'],
-                    'options' => $generated['options'],
-                    'answer_key' => $generated['answer_key'],
-                    'citations' => $generated['citations'] ?? collect($contextsByRequestId[$requestId])
-                        ->map(fn (array $chunk): array => [
-                            'document_id' => $chunk['document_id'],
-                            'page_number' => $chunk['page_number'],
-                        ])
-                        ->unique()
-                        ->values()
-                        ->all(),
-                ];
+                $batchContexts = [];
+                foreach ($requestBatch as $requestSpec) {
+                    $batchContexts[$requestSpec['id']] = $contextsByRequestId[$requestSpec['id']];
+                }
+
+                try {
+                    $generatedByRequest = $generator->generateBatch($requestBatch, $batchContexts);
+                } catch (ConnectionException|RequestException $exception) {
+                    throw $exception;
+                } catch (\Throwable) {
+                    // Invalid batch-shaped output falls back to individual generation.
+                    $generatedByRequest = [];
+                }
+
+                if ($this->isCancelled($questionRun)) {
+                    return $this->cancelledResponse($questionRun);
+                }
+
+                $batchItems = [];
+                foreach ($requestBatch as $requestSpec) {
+                    $requestId = $requestSpec['id'];
+                    $generated = $generatedByRequest[$requestId] ?? null;
+                    $generatedQuestionType = $questionTypesByRequestId[$requestId];
+
+                    if (! is_array($generated)) {
+                        try {
+                            $generated = $generator->generateOne(
+                                $requestSpec['topic_name'],
+                                $requestSpec['bloom_level'],
+                                $generatedQuestionType,
+                                $contextsByRequestId[$requestId],
+                                $createdItems,
+                            );
+                        } catch (\RuntimeException $exception) {
+                            $isExhaustedDuplicate = str_contains(
+                                $exception->getMessage(),
+                                'duplicates an existing exam item',
+                            );
+                            if (! $isExhaustedDuplicate) {
+                                throw $exception;
+                            }
+
+                            if ($generatedQuestionType === QuestionType::MatchingType->value) {
+                                $generatedQuestionType = QuestionType::MultipleChoice->value;
+                            }
+
+                            Log::warning('Falling back to Gemini after local model duplicate exhaustion.', [
+                                'question_run_id' => $questionRun->id,
+                                'topic' => $requestSpec['topic_name'],
+                                'bloom_level' => $requestSpec['bloom_level'],
+                                'question_type' => $generatedQuestionType,
+                            ]);
+
+                            $generated = $generator->generateOne(
+                                $requestSpec['topic_name'],
+                                $requestSpec['bloom_level'],
+                                $generatedQuestionType,
+                                $contextsByRequestId[$requestId],
+                                $createdItems,
+                                'gemini',
+                            );
+                        }
+                    }
+
+                    if ($this->isCancelled($questionRun)) {
+                        return $this->cancelledResponse($questionRun);
+                    }
+
+                    $item = [
+                        'topic_name' => $requestSpec['topic_name'],
+                        'bloom_level' => $requestSpec['bloom_level'],
+                        'question_type' => $generatedQuestionType,
+                        'sequence' => $sequence++,
+                        'question_text' => $generated['question_text'],
+                        'options' => $generated['options'],
+                        'answer_key' => $generated['answer_key'],
+                        'citations' => $generated['citations'] ?? collect($contextsByRequestId[$requestId])
+                            ->map(fn (array $chunk): array => [
+                                'document_id' => $chunk['document_id'],
+                                'page_number' => $chunk['page_number'],
+                            ])
+                            ->unique()
+                            ->values()
+                            ->all(),
+                    ];
+                    $batchItems[] = $item;
+                    $createdItems[] = $item;
+                }
+
+                if ($this->isCancelled($questionRun)) {
+                    return $this->cancelledResponse($questionRun);
+                }
+
+                DB::transaction(function () use ($questionRun, $batchItems): void {
+                    $questionRun->items()->createMany($batchItems);
+                    $questionRun->update([
+                        'generated_items' => $questionRun->items()->count(),
+                        'status' => 'processing',
+                        'failed_reason' => null,
+                    ]);
+                });
             }
 
-            DB::transaction(function () use ($questionRun, $createdItems): void {
-                $questionRun->items()->createMany($createdItems);
-                $questionRun->update([
-                    'generated_items' => count($createdItems),
-                    'status' => 'completed',
-                    'failed_reason' => null,
-                ]);
-            });
+            if ($this->isCancelled($questionRun)) {
+                return $this->cancelledResponse($questionRun);
+            }
+
+            $questionRun->update([
+                'generated_items' => $questionRun->items()->count(),
+                'status' => 'completed',
+                'failed_reason' => null,
+            ]);
 
             ActivityLog::record(
                 $request->user()->id,
                 'exam_generated',
-                sprintf('Generated %d exam questions for project #%d', count($createdItems), $project->id),
-                ['project_id' => $project->id, 'question_run_id' => $questionRun->id, 'item_count' => count($createdItems)],
+                sprintf('Generated %d exam questions for project #%d', $questionRun->generated_items, $project->id),
+                [
+                    'project_id' => $project->id,
+                    'question_run_id' => $questionRun->id,
+                    'item_count' => $questionRun->generated_items,
+                    'generation_duration_ms' => $this->elapsedMilliseconds($generationStartedAt),
+                ],
                 $request->ip(),
             );
         } catch (ConnectionException $exception) {
+            if ($this->isCancelled($questionRun)) {
+                return $this->cancelledResponse($questionRun);
+            }
+
             // Gemini did not respond at all (timeout / network unreachable).
             $questionRun->update([
                 'status' => 'failed',
                 'failed_reason' => $exception->getMessage(),
             ]);
 
+            $unreachable = Str::contains($exception->getMessage(), [
+                'Failed to connect',
+                'Connection refused',
+                'Could not connect',
+            ], true);
+
             return response()->json([
-                'message' => 'The AI took too long to respond. Please try again.',
-                'error_code' => 'ai_timeout',
+                'message' => $unreachable
+                    ? 'Neither Ollama AI PC is reachable. Start Ollama and confirm Tailscale is connected on both PCs.'
+                    : 'The AI took too long to respond. Please try again.',
+                'error_code' => $unreachable ? 'ai_unavailable' : 'ai_timeout',
             ], 503);
         } catch (RequestException $exception) {
+            if ($this->isCancelled($questionRun)) {
+                return $this->cancelledResponse($questionRun);
+            }
+
             $questionRun->update([
                 'status' => 'failed',
                 'failed_reason' => $exception->getMessage(),
@@ -302,12 +518,30 @@ class QuestionRunController extends Controller
 
             throw $exception;
         } catch (\Throwable $exception) {
+            if ($this->isCancelled($questionRun)) {
+                return $this->cancelledResponse($questionRun);
+            }
+
             $questionRun->update([
                 'status' => 'failed',
                 'failed_reason' => $exception->getMessage(),
             ]);
 
             throw $exception;
+        } finally {
+            $durationMs = $this->elapsedMilliseconds($generationStartedAt);
+            $finishedRun = $questionRun->fresh();
+
+            Log::info('Exam generation finished.', [
+                'project_id' => $project->id,
+                'question_run_id' => $questionRun->id,
+                'tos_run_id' => $tosRun->id,
+                'term' => $tosRun->term,
+                'item_count' => $finishedRun->generated_items,
+                'status' => $finishedRun->status,
+                'duration_ms' => $durationMs,
+                'duration_seconds' => round($durationMs / 1000, 3),
+            ]);
         }
 
         return response()->json([
@@ -320,6 +554,40 @@ class QuestionRunController extends Controller
         return response()->json([
             'data' => $questionRun->load(['items', 'tosRun']),
         ]);
+    }
+
+    public function cancelActive(Project $project): JsonResponse
+    {
+        $runs = $project->questionRuns()
+            ->where('status', 'processing')
+            ->get();
+
+        foreach ($runs as $run) {
+            $run->update([
+                'status' => 'cancelled',
+                'failed_reason' => 'Cancelled by user.',
+            ]);
+        }
+
+        return response()->json([
+            'data' => [
+                'cancelled_count' => $runs->count(),
+                'question_run_ids' => $runs->pluck('id')->values(),
+            ],
+        ]);
+    }
+
+    private function isCancelled(QuestionRun $questionRun): bool
+    {
+        return $questionRun->fresh()->status === 'cancelled';
+    }
+
+    private function cancelledResponse(QuestionRun $questionRun): JsonResponse
+    {
+        return response()->json([
+            'message' => 'Question generation was cancelled.',
+            'data' => $questionRun->fresh(['items', 'tosRun']),
+        ], 409);
     }
 
     private function resolveTosRun(Project $project, ?int $tosRunId): TosRun
@@ -369,14 +637,30 @@ class QuestionRunController extends Controller
         return $plan;
     }
 
+    /** @param array<string, int>|null $distribution */
+    private function createPendingQuestionRun(Project $project, TosRun $tosRun, ?array $distribution): QuestionRun
+    {
+        $requestedItems = (int) $tosRun->allocations->sum('item_count');
+        $this->resolveQuestionTypePlan($requestedItems, $distribution);
+
+        return $project->questionRuns()->create([
+            'tos_run_id' => $tosRun->id,
+            'requested_items' => $requestedItems,
+            'generated_items' => 0,
+            'status' => 'processing',
+        ]);
+    }
+
     /**
      * @param  Collection<int, Document>  $documents
      */
-    private function hasRequiredDocumentKinds(Collection $documents): bool
+    private function hasSyllabus(Collection $documents): bool
     {
-        $hasSyllabus = $documents->contains(fn (Document $document): bool => $document->kind === DocumentKind::Syllabus);
-        $hasMaterial = $documents->contains(fn (Document $document): bool => $document->kind === DocumentKind::Material);
+        return $documents->contains(fn (Document $document): bool => $document->kind === DocumentKind::Syllabus);
+    }
 
-        return $hasSyllabus && $hasMaterial;
+    private function elapsedMilliseconds(int $startedAt): int
+    {
+        return (int) round((hrtime(true) - $startedAt) / 1_000_000);
     }
 }

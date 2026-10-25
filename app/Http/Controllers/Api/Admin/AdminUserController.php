@@ -90,21 +90,17 @@ class AdminUserController extends Controller
 
     public function updateProfile(Request $request, User $user): JsonResponse
     {
-        if ($user->role === UserRole::Admin) {
-            return response()->json(['message' => 'Admin profiles cannot be edited here.'], 403);
-        }
-
         $validated = $request->validate([
             'first_name' => ['required', 'string', 'max:255'],
             'last_name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255', Rule::unique('users')->ignore($user->id)],
-            'role' => ['sometimes', 'string', Rule::in(['faculty', 'student'])],
+            'role' => ['sometimes', 'string', Rule::in(array_column(UserRole::cases(), 'value'))],
         ]);
 
         $user->update($validated);
 
         return response()->json([
-            'data' => $user->fresh(['id', 'first_name', 'last_name', 'email', 'role', 'status', 'last_login_at', 'created_at']),
+            'data' => $user->fresh()->only(['id', 'first_name', 'last_name', 'email', 'role', 'status', 'last_login_at', 'created_at']),
         ]);
     }
 

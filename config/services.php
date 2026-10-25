@@ -45,4 +45,28 @@ return [
         'base_url' => env('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com'),
     ],
 
+    'ai' => [
+        'provider' => env('AI_PROVIDER', 'gemini'),
+        'syllabus_provider' => env('SYLLABUS_AI_PROVIDER', 'gemini'),
+        'student_provider' => env('STUDENT_AI_PROVIDER', 'gemini'),
+        'question_batch_size' => (int) env('AI_QUESTION_BATCH_SIZE', 5),
+    ],
+
+    'ollama' => [
+        'base_url' => env('OLLAMA_BASE_URL', 'http://127.0.0.1:11434'),
+        'base_urls' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('OLLAMA_BASE_URLS', env('OLLAMA_BASE_URL', 'http://127.0.0.1:11434'))),
+        ))),
+        'model' => env('OLLAMA_MODEL', 'gemma3:4b'),
+        'context_length' => (int) env('OLLAMA_CONTEXT_LENGTH', 4096),
+        'keep_alive' => env('OLLAMA_KEEP_ALIVE', '30m'),
+        'retries' => (int) env('OLLAMA_RETRIES', 2),
+        'retry_sleep_ms' => (int) env('OLLAMA_RETRY_SLEEP_MS', 1000),
+        'connect_timeout' => (int) env('OLLAMA_CONNECT_TIMEOUT', 10),
+        'timeout' => (int) env('OLLAMA_TIMEOUT', 3600),
+        'pool_wait_timeout' => (int) env('OLLAMA_POOL_WAIT_TIMEOUT', 7200),
+        'pool_poll_ms' => (int) env('OLLAMA_POOL_POLL_MS', 250),
+    ],
+
 ];

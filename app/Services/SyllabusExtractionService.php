@@ -4,8 +4,6 @@ namespace App\Services;
 
 use App\Enums\BloomLevel;
 use App\Models\Document;
-use Illuminate\Http\Client\Response;
-use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
 class SyllabusExtractionService
@@ -23,11 +21,6 @@ class SyllabusExtractionService
      */
     public function extractWithSuggestions(Document $document): array
     {
-        $apiKey = (string) config('services.gemini.api_key');
-        if (blank($apiKey)) {
-            throw new RuntimeException('Gemini API key is missing. Set GEMINI_API_KEY in .env.');
-        }
-
         $chunkText = $document->extractedChunks()
             ->orderBy('chunk_index')
             ->get(['content', 'page_number'])
@@ -51,6 +44,7 @@ class SyllabusExtractionService
             'Use this Bloom-to-question-type policy: remembering = identification, multiple_choice, matching_type; understanding = multiple_choice, matching_type, true_false; applying = multiple_choice, essay; analyzing = multiple_choice, essay; evaluating = essay, multiple_choice; creating = essay.',
             'Recommend question-type percentages separately for each term using its topic objectives/context and the suggested Bloom levels; do not use the same generic mix for both terms unless the content warrants it.',
             'topics must be top-level syllabus topics only, not their subtopics.',
+            'topic_name must contain only the concise topic title (maximum 150 characters). Never put analysis, explanations, or extraction notes in topic_name.',
             'Keep topics in exactly the same reading order as the syllabus; do not alphabetize, group, or reorder them by term or week.',
             'Each topic must have: topic_name, hours, objective, bloom_level, confidence, term, week_number.',
             'hours must be numeric and positive.',
@@ -64,15 +58,13 @@ class SyllabusExtractionService
             $chunkText,
         ]);
 
-        $baseUrl = rtrim((string) config('services.gemini.base_url'), '/');
-        $response = $this->callGeminiWithFallback($baseUrl, $apiKey, $prompt);
-
-        $jsonText = data_get($response->json(), 'candidates.0.content.parts.0.text');
-        if (! is_string($jsonText) || blank($jsonText)) {
-            throw new RuntimeException('Gemini returned an empty syllabus extraction payload.');
-        }
-
-        $parsed = $this->decodeJsonPayload($jsonText);
+        $parsed = app(AiTextGenerator::class)->generateJson(
+            $prompt,
+            0.1,
+            $this->responseSchema(),
+            null,
+            (string) config('services.ai.syllabus_provider', 'gemini'),
+        );
         if (! is_array($parsed) || ! isset($parsed['topics']) || ! is_array($parsed['topics'])) {
             throw new RuntimeException('Syllabus extraction response is not valid JSON schema.');
         }
@@ -83,10 +75,10 @@ class SyllabusExtractionService
                 continue;
             }
 
-            $name = $topic['topic_name'] ?? null;
+            $name = $this->sanitizeTopicName($topic['topic_name'] ?? null);
             $hours = $topic['hours'] ?? null;
 
-            if (! is_string($name) || blank($name) || ! is_numeric($hours) || (float) $hours <= 0) {
+            if ($name === null || ! is_numeric($hours) || (float) $hours <= 0) {
                 continue;
             }
 
@@ -95,7 +87,7 @@ class SyllabusExtractionService
                 : null;
 
             $topics[] = [
-                'topic_name' => trim($name),
+                'topic_name' => $name,
                 'hours' => (float) $hours,
                 'objective' => isset($topic['objective']) && is_string($topic['objective'])
                     ? trim($topic['objective'])
@@ -166,78 +158,22 @@ class SyllabusExtractionService
         return in_array($normalized, $allowed, true) ? $normalized : null;
     }
 
-    private function callGeminiWithFallback(string $baseUrl, string $apiKey, string $prompt): Response
+    private function sanitizeTopicName(mixed $value): ?string
     {
-        $models = array_values(array_unique(array_filter([
-            (string) config('services.gemini.model'),
-            (string) config('services.gemini.fallback_model'),
-        ])));
-
-        $retries = max(1, (int) config('services.gemini.retries', 5));
-        $sleepMs = max(200, (int) config('services.gemini.retry_sleep_ms', 1500));
-        $lastResponse = null;
-
-        foreach ($models as $model) {
-            $url = sprintf('%s/v1beta/models/%s:generateContent', $baseUrl, $model);
-
-            for ($attempt = 1; $attempt <= $retries; $attempt++) {
-                $response = Http::withHeaders(['x-goog-api-key' => $apiKey])
-                    ->timeout(40)
-                    ->connectTimeout(10)
-                    ->post($url, [
-                        'contents' => [
-                            [
-                                'parts' => [
-                                    ['text' => $prompt],
-                                ],
-                            ],
-                        ],
-                        'generationConfig' => [
-                            'temperature' => 0.1,
-                            'responseMimeType' => 'application/json',
-                            'maxOutputTokens' => 65536,
-                            'responseSchema' => $this->responseSchema(),
-                        ],
-                    ]);
-
-                if ($response->successful()) {
-                    return $response;
-                }
-
-                $lastResponse = $response;
-                $isRetryable = in_array($response->status(), [429, 500, 502, 503, 504], true);
-                if (! $isRetryable) {
-                    break;
-                }
-
-                usleep($sleepMs * 1000 * $attempt);
-            }
+        if (! is_string($value)) {
+            return null;
         }
 
-        if ($lastResponse !== null) {
-            $lastResponse->throw();
+        // Some models occasionally append their reasoning after a large block of
+        // whitespace. Keep the title before that boundary and discard the leak.
+        $name = preg_split('/\s{4,}/u', trim($value), 2)[0] ?? '';
+        $name = preg_replace('/\s+/u', ' ', trim($name)) ?? '';
+
+        if ($name === '' || mb_strlen($name) > 255) {
+            return null;
         }
 
-        throw new RuntimeException('Gemini request failed without a response.');
-    }
-
-    /**
-     * Gemini normally honors responseMimeType, but some model responses still
-     * wrap JSON in a fenced block. Accept that harmless wrapper while keeping
-     * the application-level schema validation below strict.
-     *
-     * @return array<string, mixed>|null
-     */
-    private function decodeJsonPayload(string $jsonText): ?array
-    {
-        $jsonText = trim($jsonText);
-        if (preg_match('/^```(?:json)?\s*(.*?)\s*```$/is', $jsonText, $matches) === 1) {
-            $jsonText = trim($matches[1]);
-        }
-
-        $decoded = json_decode($jsonText, true);
-
-        return is_array($decoded) ? $decoded : null;
+        return $name;
     }
 
     /** @return array<string, mixed> */

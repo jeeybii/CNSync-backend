@@ -31,7 +31,7 @@ class TosController extends Controller
 
     public function store(Request $request, Project $project): JsonResponse
     {
-        $this->assertRequiredDocumentsUploaded($project);
+        $this->assertSyllabusUploaded($project);
 
         $validated = $request->validate([
             'total_items' => ['required', 'integer', 'min:1', 'max:500'],
@@ -71,7 +71,7 @@ class TosController extends Controller
         ]);
 
         $term = $validated['term'] ?? null;
-        $this->assertRequiredDocumentsUploaded($project);
+        $this->assertSyllabusUploaded($project);
 
         $this->validateUniqueBloomLevels($validated['bloom_levels']);
 
@@ -115,10 +115,10 @@ class TosController extends Controller
     {
         $validated = $request->validate([
             'syllabus_document_id' => ['nullable', 'integer'],
-            'midterm' => ['required', 'array'],
-            'final' => ['required', 'array'],
-            'midterm.total_items' => ['required', 'integer', 'min:1', 'max:500'],
-            'final.total_items' => ['required', 'integer', 'min:1', 'max:500'],
+            'midterm' => ['required_without:final', 'array'],
+            'final' => ['required_without:midterm', 'array'],
+            'midterm.total_items' => ['required_with:midterm', 'integer', 'min:1', 'max:500'],
+            'final.total_items' => ['required_with:final', 'integer', 'min:1', 'max:500'],
             'midterm.bloom_levels' => ['sometimes', 'array', 'size:3'],
             'final.bloom_levels' => ['sometimes', 'array', 'size:3'],
             'midterm.bloom_levels.*' => ['string', Rule::in(BloomLevel::values())],
@@ -133,11 +133,12 @@ class TosController extends Controller
             'final.question_type_percentages.*' => ['numeric', 'min:0'],
         ]);
 
-        $this->assertRequiredDocumentsUploaded($project);
+        $this->assertSyllabusUploaded($project);
         $document = $this->resolveSyllabusDocument($project, $validated['syllabus_document_id'] ?? null);
         $runs = [];
 
-        foreach (['midterm', 'final'] as $term) {
+        $selectedTerms = array_values(array_filter(['midterm', 'final'], fn (string $term): bool => isset($validated[$term])));
+        foreach ($selectedTerms as $term) {
             $termTopics = $document->syllabusTopics()
                 ->where('term', $term)
                 ->orderBy('position')
@@ -154,7 +155,7 @@ class TosController extends Controller
 
             if ($termTopics === []) {
                 throw ValidationException::withMessages([
-                    $term => [sprintf('The syllabus needs at least one %s topic before generating both exams.', $term)],
+                    $term => [sprintf('The syllabus needs at least one %s topic before generating that exam.', $term)],
                 ]);
             }
 
@@ -211,9 +212,9 @@ class TosController extends Controller
             ];
         }
 
-        return DB::transaction(function () use ($project, $runs): JsonResponse {
+        return DB::transaction(function () use ($project, $runs, $selectedTerms): JsonResponse {
             $created = [];
-            foreach (['midterm', 'final'] as $term) {
+            foreach ($selectedTerms as $term) {
                 $plan = $runs[$term];
                 $tosRun = $this->createRunFromTopics(
                     $project,
@@ -463,7 +464,7 @@ class TosController extends Controller
         return $query->latest('id')->firstOrFail();
     }
 
-    private function assertRequiredDocumentsUploaded(Project $project): void
+    private function assertSyllabusUploaded(Project $project): void
     {
         $syllabusCount = Document::query()
             ->where('project_id', $project->id)
@@ -476,15 +477,5 @@ class TosController extends Controller
             ]);
         }
 
-        $materialCount = Document::query()
-            ->where('project_id', $project->id)
-            ->where('kind', DocumentKind::Material)
-            ->count();
-
-        if ($materialCount < 1) {
-            throw ValidationException::withMessages([
-                'materials' => ['Upload at least one learning material before generating TOS.'],
-            ]);
-        }
     }
 }

@@ -3,9 +3,7 @@
 namespace App\Services;
 
 use App\Enums\QuestionType;
-use Illuminate\Http\Client\Response;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use ZipArchive;
 
@@ -83,11 +81,6 @@ class StudentDeckGeneratorService
             throw new RuntimeException('No text content to generate questions from.');
         }
 
-        $apiKey = (string) config('services.gemini.api_key');
-        if (blank($apiKey)) {
-            throw new RuntimeException('Gemini API key is missing. Set GEMINI_API_KEY in .env.');
-        }
-
         $contextText = implode("\n\n", array_map(
             static fn (string $chunk, int $i): string => sprintf('[Chunk %d] %s', $i + 1, $chunk),
             $chunks,
@@ -100,6 +93,11 @@ class StudentDeckGeneratorService
             ->map(fn (int $n, string $type): string => sprintf('%d %s', $n, $type))
             ->values()
             ->implode(', ');
+
+        $provider = strtolower((string) config('services.ai.student_provider', 'gemini'));
+        if ($provider === 'ollama') {
+            return $this->generateWithOllama($chunks, $typePlan);
+        }
 
         $prompt = implode("\n", [
             sprintf('Generate exactly %d grounded practice questions as JSON for a student study deck.', $count),
@@ -119,16 +117,43 @@ class StudentDeckGeneratorService
             $contextText,
         ]);
 
-        $baseUrl = rtrim((string) config('services.gemini.base_url'), '/');
-        $response = $this->callGeminiWithFallback($baseUrl, $apiKey, $prompt);
-        $parsed = $this->parseJsonPayload($response);
+        $attempts = $provider === 'ollama' ? 3 : 1;
+        $lastError = null;
+        for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+            $retryPrompt = $prompt;
+            if ($lastError !== null) {
+                $retryPrompt .= "\nThe previous response was rejected: {$lastError}\nReturn a corrected complete questions array.";
+            }
 
-        $rawQuestions = $parsed['questions'] ?? null;
-        if (! is_array($rawQuestions)) {
-            throw new RuntimeException('Gemini returned no questions array.');
+            try {
+                $parsed = app(AiTextGenerator::class)->generateJson(
+                    $retryPrompt,
+                    0.3,
+                    $this->responseSchema($count),
+                    null,
+                    $provider,
+                );
+                $rawQuestions = $parsed['questions'] ?? null;
+                if (! is_array($rawQuestions)) {
+                    throw new RuntimeException('AI response is missing the questions array.');
+                }
+
+                $questions = $this->validateAndNormalize($rawQuestions, $typePlan);
+                if (count($questions) !== $count) {
+                    throw new RuntimeException(sprintf(
+                        'AI returned %d valid questions; exactly %d are required.',
+                        count($questions),
+                        $count,
+                    ));
+                }
+
+                return $questions;
+            } catch (RuntimeException $exception) {
+                $lastError = $exception->getMessage();
+            }
         }
 
-        return $this->validateAndNormalize($rawQuestions, $typePlan);
+        throw new RuntimeException('AI could not generate a complete student quiz after validation: '.$lastError);
     }
 
     /**
@@ -168,6 +193,140 @@ class StudentDeckGeneratorService
     }
 
     /**
+     * @param  array<int, string>  $chunks
+     * @param  array<int, string>  $typePlan
+     * @return array<int, array{sequence:int,question_text:string,question_type:string,options:mixed,answer_key:string,hint:string}>
+     */
+    private function generateWithOllama(array $chunks, array $typePlan): array
+    {
+        $questions = [];
+
+        foreach ($typePlan as $index => $questionType) {
+            $context = $this->contextWindow($chunks, $index);
+            $avoid = array_column($questions, 'question_text');
+            $basePrompt = implode("\n", [
+                'Generate exactly one grounded practice question as JSON.',
+                'Use only the supplied learning-material context.',
+                sprintf('Required question type: %s.', $questionType),
+                'Return keys: question_text, options, answer_key, hint.',
+                'Do not include question_type or sequence.',
+                'Do not repeat or closely paraphrase an avoided question.',
+                'The hint must help recall without directly giving the answer.',
+                '- multiple_choice: exactly four plain options without A/B/C/D labels; answer_key is A, B, C, or D.',
+                '- true_false: write a declarative statement; options are True and False; answer_key is True or False.',
+                '- identification: options is empty; answer_key is the expected term.',
+                '- essay: options is empty; answer_key is a concise rubric or model answer.',
+                $avoid === [] ? 'Avoided questions: none.' : "Avoided questions:\n- ".implode("\n- ", $avoid),
+                'Learning-material context:',
+                $context,
+            ]);
+
+            $lastError = null;
+            for ($attempt = 1; $attempt <= 3; $attempt++) {
+                $prompt = $basePrompt;
+                if ($lastError !== null) {
+                    $prompt .= "\nPrevious response rejected: {$lastError}\nReturn a corrected, different question.";
+                }
+
+                try {
+                    $payload = app(AiTextGenerator::class)->generateJson(
+                        $prompt,
+                        0.3,
+                        $this->singleQuestionSchema($questionType),
+                        null,
+                        'ollama',
+                    );
+                    $questionText = $payload['question_text'] ?? null;
+                    $answerKey = $payload['answer_key'] ?? null;
+                    $options = $payload['options'] ?? [];
+                    if (! is_string($questionText) || blank($questionText) || ! is_string($answerKey) || ! is_array($options)) {
+                        throw new RuntimeException('Question fields are incomplete.');
+                    }
+
+                    $normalized = $this->normalizeForType($questionType, $options, $answerKey);
+                    if ($normalized === null) {
+                        throw new RuntimeException('Question options or answer key do not match the required type.');
+                    }
+                    if ($this->isDuplicateQuestion($questionText, $avoid)) {
+                        throw new RuntimeException('Question duplicates an earlier item.');
+                    }
+
+                    $questions[] = [
+                        'sequence' => $index + 1,
+                        'question_text' => trim($questionText),
+                        'question_type' => $normalized['type'],
+                        'options' => $normalized['options'],
+                        'answer_key' => $normalized['answer_key'],
+                        'hint' => is_string($payload['hint'] ?? null) ? trim($payload['hint']) : '',
+                    ];
+                    $lastError = null;
+                    break;
+                } catch (RuntimeException $exception) {
+                    $lastError = $exception->getMessage();
+                }
+            }
+
+            if ($lastError !== null) {
+                throw new RuntimeException(sprintf(
+                    'AI could not generate student question %d after validation: %s',
+                    $index + 1,
+                    $lastError,
+                ));
+            }
+        }
+
+        return $questions;
+    }
+
+    /** @param array<int, string> $chunks */
+    private function contextWindow(array $chunks, int $questionIndex): string
+    {
+        $windowSize = min(6, count($chunks));
+        $start = ($questionIndex * $windowSize) % count($chunks);
+        $selected = [];
+        for ($offset = 0; $offset < $windowSize; $offset++) {
+            $selected[] = $chunks[($start + $offset) % count($chunks)];
+        }
+
+        return mb_substr(implode("\n\n", $selected), 0, 10000);
+    }
+
+    /** @return array<string, mixed> */
+    private function singleQuestionSchema(string $questionType): array
+    {
+        $options = match ($questionType) {
+            QuestionType::MultipleChoice->value => ['type' => 'ARRAY', 'items' => ['type' => 'STRING'], 'minItems' => 4, 'maxItems' => 4],
+            QuestionType::TrueFalse->value => ['type' => 'ARRAY', 'items' => ['type' => 'STRING', 'enum' => ['True', 'False']], 'minItems' => 2, 'maxItems' => 2],
+            default => ['type' => 'ARRAY', 'maxItems' => 0],
+        };
+        $answerKey = match ($questionType) {
+            QuestionType::MultipleChoice->value => ['type' => 'STRING', 'enum' => ['A', 'B', 'C', 'D']],
+            QuestionType::TrueFalse->value => ['type' => 'STRING', 'enum' => ['True', 'False']],
+            default => ['type' => 'STRING'],
+        };
+
+        return [
+            'type' => 'OBJECT',
+            'properties' => [
+                'question_text' => ['type' => 'STRING'],
+                'options' => $options,
+                'answer_key' => $answerKey,
+                'hint' => ['type' => 'STRING'],
+            ],
+            'required' => ['question_text', 'options', 'answer_key', 'hint'],
+        ];
+    }
+
+    /** @param array<int, string> $existing */
+    private function isDuplicateQuestion(string $question, array $existing): bool
+    {
+        $normalize = static fn (string $text): string => mb_strtolower(trim((string) preg_replace('/[^\pL\pN]+/u', ' ', $text)));
+        $candidate = $normalize($question);
+
+        return collect($existing)->contains(fn (string $text): bool => $normalize($text) === $candidate);
+    }
+
+    /**
      * Validates and normalises the raw questions array from Gemini.
      *
      * @param  array<int, mixed>  $rawQuestions
@@ -185,7 +344,7 @@ class StudentDeckGeneratorService
             }
 
             $questionText = $item['question_text'] ?? null;
-            $questionType = $item['question_type'] ?? ($typePlan[$sequence - 1] ?? QuestionType::MultipleChoice->value);
+            $questionType = $typePlan[$sequence - 1] ?? QuestionType::MultipleChoice->value;
             $options = $item['options'] ?? [];
             $answerKey = $item['answer_key'] ?? null;
             $hint = $item['hint'] ?? '';
@@ -214,6 +373,39 @@ class StudentDeckGeneratorService
         }
 
         return $validated;
+    }
+
+    /** @return array<string, mixed> */
+    private function responseSchema(int $count): array
+    {
+        return [
+            'type' => 'OBJECT',
+            'properties' => [
+                'questions' => [
+                    'type' => 'ARRAY',
+                    'minItems' => $count,
+                    'maxItems' => $count,
+                    'items' => [
+                        'type' => 'OBJECT',
+                        'properties' => [
+                            'sequence' => ['type' => 'INTEGER'],
+                            'question_text' => ['type' => 'STRING'],
+                            'question_type' => ['type' => 'STRING', 'enum' => [
+                                QuestionType::MultipleChoice->value,
+                                QuestionType::TrueFalse->value,
+                                QuestionType::Identification->value,
+                                QuestionType::Essay->value,
+                            ]],
+                            'options' => ['type' => 'ARRAY', 'items' => ['type' => 'STRING']],
+                            'answer_key' => ['type' => 'STRING'],
+                            'hint' => ['type' => 'STRING'],
+                        ],
+                        'required' => ['sequence', 'question_text', 'question_type', 'options', 'answer_key', 'hint'],
+                    ],
+                ],
+            ],
+            'required' => ['questions'],
+        ];
     }
 
     /**
@@ -350,72 +542,5 @@ class StudentDeckGeneratorService
         $zip->close();
 
         return trim((string) preg_replace('/\s+/', ' ', implode(' ', $parts)));
-    }
-
-    private function callGeminiWithFallback(string $baseUrl, string $apiKey, string $prompt): Response
-    {
-        $models = array_values(array_unique(array_filter([
-            (string) config('services.gemini.model'),
-            (string) config('services.gemini.fallback_model'),
-        ])));
-
-        $retries = max(1, (int) config('services.gemini.retries', 3));
-        $sleepMs = max(200, (int) config('services.gemini.retry_sleep_ms', 1000));
-        $lastResponse = null;
-
-        foreach ($models as $model) {
-            $url = sprintf('%s/v1beta/models/%s:generateContent', $baseUrl, $model);
-
-            for ($attempt = 1; $attempt <= $retries; $attempt++) {
-                $response = Http::withHeaders(['x-goog-api-key' => $apiKey])
-                    ->timeout((int) config('services.gemini.timeout', 120))
-                    ->connectTimeout(15)
-                    ->post($url, [
-                        'contents' => [[
-                            'parts' => [['text' => $prompt]],
-                        ]],
-                        'generationConfig' => [
-                            'temperature' => 0.3,
-                            'responseMimeType' => 'application/json',
-                        ],
-                    ]);
-
-                if ($response->successful()) {
-                    return $response;
-                }
-
-                $lastResponse = $response;
-                if (! in_array($response->status(), [429, 500, 502, 503, 504], true)) {
-                    break;
-                }
-
-                usleep($sleepMs * 1000 * $attempt);
-            }
-        }
-
-        if ($lastResponse !== null) {
-            $lastResponse->throw();
-        }
-
-        throw new RuntimeException('Gemini request failed without a response.');
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function parseJsonPayload(Response $response): array
-    {
-        $jsonText = data_get($response->json(), 'candidates.0.content.parts.0.text');
-        if (! is_string($jsonText) || blank($jsonText)) {
-            throw new RuntimeException('Gemini returned an empty response.');
-        }
-
-        /** @var mixed $parsed */
-        $parsed = json_decode($jsonText, true);
-        if (! is_array($parsed)) {
-            throw new RuntimeException('Gemini response is not valid JSON.');
-        }
-
-        return $parsed;
     }
 }

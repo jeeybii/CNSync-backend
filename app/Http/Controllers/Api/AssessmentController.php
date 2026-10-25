@@ -84,12 +84,12 @@ class AssessmentController extends Controller
     {
         $validated = $request->validate([
             'project_id' => ['required', 'integer'],
-            'midterm' => ['required', 'array'],
-            'final' => ['required', 'array'],
-            'midterm.question_run_id' => ['required', 'integer'],
-            'final.question_run_id' => ['required', 'integer', 'different:midterm.question_run_id'],
-            'midterm.title' => ['required', 'string', 'max:255'],
-            'final.title' => ['required', 'string', 'max:255'],
+            'midterm' => ['required_without:final', 'array'],
+            'final' => ['required_without:midterm', 'array'],
+            'midterm.question_run_id' => ['required_with:midterm', 'integer'],
+            'final.question_run_id' => ['required_with:final', 'integer', 'different:midterm.question_run_id'],
+            'midterm.title' => ['required_with:midterm', 'string', 'max:255'],
+            'final.title' => ['required_with:final', 'string', 'max:255'],
             'midterm.number_of_sets' => ['sometimes', 'integer', 'in:1,2'],
             'final.number_of_sets' => ['sometimes', 'integer', 'in:1,2'],
             'midterm.tos' => ['sometimes', 'array'],
@@ -102,6 +102,9 @@ class AssessmentController extends Controller
 
         $runs = [];
         foreach (['midterm', 'final'] as $term) {
+            if (! isset($validated[$term])) {
+                continue;
+            }
             $runs[$term] = QuestionRun::query()
                 ->where('project_id', $project->id)
                 ->with(['items' => fn ($query) => $query->orderBy('sequence'), 'tosRun.allocations'])
@@ -116,7 +119,7 @@ class AssessmentController extends Controller
 
         return DB::transaction(function () use ($request, $project, $validated, $runs): JsonResponse {
             $assessments = [];
-            foreach (['midterm', 'final'] as $term) {
+            foreach (array_keys($runs) as $term) {
                 $run = $runs[$term];
                 $numberOfSets = (int) ($validated[$term]['number_of_sets'] ?? 1);
                 $assessment = Assessment::query()->create([

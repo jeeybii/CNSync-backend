@@ -14,7 +14,10 @@ class ProcessDocumentJob implements ShouldQueue
 
     public function __construct(
         public int $documentId
-    ) {}
+    ) {
+        // Keep uploads responsive even while an exam is being generated.
+        $this->onQueue('documents');
+    }
 
     public function handle(DocumentTextExtractor $extractor): void
     {

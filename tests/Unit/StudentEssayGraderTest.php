@@ -4,6 +4,8 @@ use App\Services\StudentEssayGrader;
 use Illuminate\Support\Facades\Http;
 
 test('AI essay grading returns a bounded score and simple comment', function () {
+    config()->set('services.ai.provider', 'ollama');
+    config()->set('services.ai.student_provider', 'gemini');
     config()->set('services.gemini.api_key', 'test-key');
     Http::fake(['*' => Http::response([
         'candidates' => [['content' => ['parts' => [['text' => '{"score":84,"comment":"Good explanation. Add one example."}']]]]],

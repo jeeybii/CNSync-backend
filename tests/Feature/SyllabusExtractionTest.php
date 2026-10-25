@@ -15,6 +15,8 @@ function syllabusAuthHeader(User $user): array
 }
 
 test('faculty can extract structured syllabus topics from analyzed syllabus document', function () {
+    config()->set('services.ai.provider', 'ollama');
+    config()->set('services.ai.syllabus_provider', 'gemini');
     config()->set('services.gemini.api_key', 'test-key');
 
     Http::fake([
@@ -27,7 +29,7 @@ test('faculty can extract structured syllabus topics from analyzed syllabus docu
                                 'text' => json_encode([
                                     'topics' => [
                                         [
-                                            'topic_name' => 'Neural Networks',
+                                            'topic_name' => "Neural Networks\n".str_repeat("\t", 300).'This is model reasoning that must not be saved as the topic name.',
                                             'hours' => 6,
                                             'objective' => 'Explain and apply basic ANN models',
                                             'bloom_level' => 'apply',

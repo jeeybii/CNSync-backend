@@ -154,7 +154,7 @@ test('faculty can create tos run from extracted syllabus topics', function () {
         ->assertJsonPath('data.bloom_distribution.applying', 1 / 3);
 });
 
-test('term scoped tos does not wait for materials for every topic', function () {
+test('term scoped tos can be generated without learning materials', function () {
     $user = User::factory()->create();
     $project = Project::factory()->for($user)->create();
     $syllabus = Document::factory()->for($project)->create([
@@ -171,12 +171,6 @@ test('term scoped tos does not wait for materials for every topic', function () 
             'week_number' => $week,
         ]);
     }
-    Document::factory()->for($project)->create([
-        'kind' => DocumentKind::Material,
-        'status' => DocumentStatus::Analyzed,
-        'week_number' => 1,
-    ]);
-
     $payload = [
         'total_items' => 6,
         'syllabus_document_id' => $syllabus->id,

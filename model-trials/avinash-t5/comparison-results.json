@@ -1,0 +1,219 @@
+{
+  "context": "A router forwards packets between different networks using destination IP addresses and a routing table. A switch connects devices within the same local network and forwards frames using MAC addresses. Routers separate broadcast domains, while switches create a separate collision domain for each port.",
+  "results": [
+    {
+      "bloom": "remembering",
+      "question_type": "identification",
+      "avinash_seed": "A router forwards packets between different networks using destination IP addresses and what?",
+      "assistants": {
+        "gemini": {
+          "model": "gemini-2.5-flash",
+          "latency_seconds": 1.58,
+          "output": {
+            "question": "Which device forwards packets between different networks?",
+            "question_type": "identification",
+            "bloom_level": "remembering",
+            "choices": [],
+            "answer": "Router",
+            "explanation": "A router forwards packets between different networks, as stated in the learning material."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.714
+          }
+        },
+        "gemma": {
+          "model": "gemma-4-26b-a4b-it",
+          "latency_seconds": 3.2,
+          "output": {
+            "question": "A router forwards packets between different networks using destination IP addresses and what?",
+            "question_type": "identification",
+            "bloom_level": "remembering",
+            "choices": [],
+            "answer": "routing table",
+            "explanation": "According to the text, a router forwards packets between different networks using destination IP addresses and a routing table."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.9
+          }
+        }
+      }
+    },
+    {
+      "bloom": "understanding",
+      "question_type": "true_false",
+      "avinash_seed": "does a router forward packets between different networks using destination IP addresses [true]",
+      "assistants": {
+        "gemini": {
+          "model": "gemini-2.5-flash",
+          "latency_seconds": 1.54,
+          "output": {
+            "question": "A router forwards packets between different networks using destination IP addresses.",
+            "question_type": "true_false",
+            "bloom_level": "understanding",
+            "choices": [],
+            "answer": "True",
+            "explanation": "The learning material states, 'A router forwards packets between different networks using destination IP addresses and a routing table.'"
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 1.0
+          }
+        },
+        "gemma": {
+          "model": "gemma-4-26b-a4b-it",
+          "latency_seconds": 3.29,
+          "output": {
+            "question": "A router uses destination IP addresses and a routing table to forward packets between different networks.",
+            "question_type": "true_false",
+            "bloom_level": "understanding",
+            "choices": [],
+            "answer": "True",
+            "explanation": "According to the text, a router forwards packets between different networks using destination IP addresses and a routing table."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.818
+          }
+        }
+      }
+    },
+    {
+      "bloom": "applying",
+      "question_type": "multiple_choice",
+      "avinash_seed": "A router forwards packets between different networks using destination IP addresses and what?",
+      "assistants": {
+        "gemini": {
+          "model": "gemini-2.5-flash",
+          "latency_seconds": 2.25,
+          "output": {
+            "question": "A network administrator is configuring a new office network. They need to ensure that devices in different departments (e.g., Sales and Marketing) can communicate with each other, but also that broadcast traffic from one department does not flood the network of the other. Which device should the administrator use to connect the Sales and Marketing networks?",
+            "question_type": "multiple_choice",
+            "bloom_level": "applying",
+            "choices": [
+              "A hub",
+              "A switch",
+              "A router",
+              "A modem"
+            ],
+            "answer": "A router",
+            "explanation": "Routers forward packets between different networks and separate broadcast domains. This allows devices in different departments (different networks) to communicate while preventing broadcast traffic from one department from affecting the other."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.207
+          }
+        },
+        "gemma": {
+          "model": "gemma-4-26b-a4b-it",
+          "latency_seconds": 4.63,
+          "output": {
+            "question": "A network administrator needs to connect two different local networks so that devices in Network A can communicate with devices in Network B. Based on the provided information, which device should be used to forward packets between these networks using destination IP addresses?",
+            "question_type": "multiple_choice",
+            "bloom_level": "applying",
+            "choices": [
+              "A switch",
+              "A router",
+              "A collision domain",
+              "A MAC address"
+            ],
+            "answer": "A router",
+            "explanation": "According to the text, a router forwards packets between different networks using destination IP addresses."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.4
+          }
+        }
+      }
+    },
+    {
+      "bloom": "analyzing",
+      "question_type": "essay",
+      "avinash_seed": "A router forwards packets between different networks using destination IP addresses and what?",
+      "assistants": {
+        "gemini": {
+          "model": "gemini-2.5-flash",
+          "latency_seconds": 2.58,
+          "output": {
+            "question": "Compare and contrast the functions of a router and a switch, specifically detailing how each device utilizes different addressing schemes and impacts network domains (broadcast and collision).",
+            "question_type": "essay",
+            "bloom_level": "analyzing",
+            "choices": [],
+            "answer": "A router forwards packets between different networks using destination IP addresses and a routing table, separating broadcast domains. A switch connects devices within the same local network and forwards frames using MAC addresses, creating a separate collision domain for each port.",
+            "explanation": "This question requires candidates to break down the information about routers and switches, identify their individual characteristics (addressing, network domains), and then compare and contrast these elements. This aligns with Bloom's Analyzing level, which involves breaking material into its constituent parts and determining how the parts relate to one another and to an overall structure or purpose."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.444
+          }
+        },
+        "gemma": {
+          "model": "gemma-4-26b-a4b-it",
+          "latency_seconds": 4.97,
+          "output": {
+            "question": "Compare and contrast the roles of a router and a switch in a network, specifically focusing on how they use addressing to forward data and their impact on network domains.",
+            "question_type": "essay",
+            "bloom_level": "analyzing",
+            "choices": [],
+            "answer": "A router forwards packets between different networks using destination IP addresses and a routing table, and it serves to separate broadcast domains. In contrast, a switch connects devices within the same local network by forwarding frames using MAC addresses and creates a separate collision domain for each port.",
+            "explanation": "The question requires the candidate to break down the functional differences between routers and switches regarding addressing methods (IP/routing table vs. MAC addresses) and domain management (broadcast domains vs. collision domains) as described in the text."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.267
+          }
+        }
+      }
+    }
+  ]
+}

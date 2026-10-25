@@ -4,6 +4,8 @@ use App\Services\StudentDeckGeneratorService;
 use Illuminate\Support\Facades\Http;
 
 test('student deck generator accepts essay questions with a model answer', function () {
+    config()->set('services.ai.provider', 'ollama');
+    config()->set('services.ai.student_provider', 'gemini');
     config()->set('services.gemini.api_key', 'test-key');
     Http::fake(['*' => Http::response([
         'candidates' => [['content' => ['parts' => [['text' => json_encode([

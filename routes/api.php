@@ -54,7 +54,10 @@ Route::middleware(['auth:sanctum', 'faculty'])->group(function (): void {
     Route::get('projects/{project}/tos-runs/{tosRun}', [TosController::class, 'show']);
     Route::get('projects/{project}/question-runs', [QuestionRunController::class, 'index']);
     Route::post('projects/{project}/question-runs', [QuestionRunController::class, 'store']);
+    Route::post('projects/{project}/question-runs/async', [QuestionRunController::class, 'enqueue']);
     Route::post('projects/{project}/question-runs/pair', [QuestionRunController::class, 'storePair']);
+    Route::post('projects/{project}/question-runs/pair/async', [QuestionRunController::class, 'enqueuePair']);
+    Route::post('projects/{project}/question-runs/cancel', [QuestionRunController::class, 'cancelActive']);
     Route::get('projects/{project}/question-runs/{questionRun}', [QuestionRunController::class, 'show']);
     Route::post('projects/{project}/question-runs/{questionRun}/items', [QuestionItemController::class, 'store']);
     Route::put('projects/{project}/question-runs/{questionRun}/items/{questionItem}', [QuestionItemController::class, 'update']);

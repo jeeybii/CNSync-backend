@@ -85,14 +85,9 @@ class DocumentController extends Controller
         }
 
         $validated = $request->validate([
-            'materials' => ['required', 'array', 'min:1', 'max:10'],
+            'materials' => ['required', 'array', 'min:1'],
             'materials.*' => ['required', 'file', 'max:65536', 'mimes:pdf,doc,docx,txt,pptx'],
         ]);
-
-        $capacityError = $this->validateProjectDocumentCapacity($project, DocumentKind::Material, count($validated['materials']));
-        if ($capacityError !== null) {
-            return $capacityError;
-        }
 
         $materials = collect($validated['materials'])
             ->map(fn ($file) => $this->createDocument($project, $file, DocumentKind::Material, $syllabusTopic)->fresh())
@@ -257,7 +252,7 @@ class DocumentController extends Controller
 
         $validated = $request->validate([
             'topics' => ['required', 'array', 'min:1'],
-            'topics.*.id' => ['required', 'integer'],
+            'topics.*.id' => ['nullable', 'integer'],
             'topics.*.topic_name' => ['required', 'string', 'max:255'],
             'topics.*.hours' => ['required', 'numeric', 'gt:0'],
             'topics.*.objective' => ['nullable', 'string', 'max:5000'],
@@ -266,19 +261,24 @@ class DocumentController extends Controller
             'topics.*.week_number' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
+        $submittedIds = collect($validated['topics'])->pluck('id')->filter()->map(fn ($id): int => (int) $id);
+        if ($submittedIds->count() !== $submittedIds->unique()->count()) {
+            throw ValidationException::withMessages(['topics' => ['A syllabus topic cannot be submitted more than once.']]);
+        }
+
         $topicsById = $document->syllabusTopics()
-            ->whereIn('id', collect($validated['topics'])->pluck('id')->all())
+            ->whereIn('id', $submittedIds->all())
             ->get()
             ->keyBy('id');
 
-        if ($topicsById->count() !== count($validated['topics'])) {
+        if ($topicsById->count() !== $submittedIds->count()) {
             return response()->json([
                 'message' => 'One or more syllabus topic rows do not belong to this document.',
             ], 422);
         }
 
         $weekNumbers = collect($validated['topics'])
-            ->map(fn (array $payload): ?int => $payload['week_number'] ?? $topicsById->get($payload['id'])?->week_number)
+            ->map(fn (array $payload): ?int => $payload['week_number'] ?? (($payload['id'] ?? null) ? $topicsById->get($payload['id'])?->week_number : null))
             ->filter(fn (?int $week): bool => $week !== null);
         if ($weekNumbers->count() !== $weekNumbers->unique()->count()) {
             throw ValidationException::withMessages([
@@ -288,21 +288,43 @@ class DocumentController extends Controller
 
         DB::transaction(function () use ($validated, $topicsById, $document, $suggestions): void {
             $refreshSuggestions = false;
-            foreach ($validated['topics'] as $payload) {
-                /** @var SyllabusTopic $topic */
-                $topic = $topicsById->get($payload['id']);
-                $topic->update([
+            $keptIds = [];
+            foreach ($validated['topics'] as $position => $payload) {
+                /** @var SyllabusTopic|null $topic */
+                $topic = isset($payload['id']) ? $topicsById->get($payload['id']) : null;
+                $attributes = [
+                    'project_id' => $document->project_id,
                     'topic_name' => $payload['topic_name'],
                     'hours' => (float) $payload['hours'],
-                    'objective' => array_key_exists('objective', $payload) ? $payload['objective'] : $topic->objective,
-                    'bloom_level' => array_key_exists('bloom_level', $payload) ? $payload['bloom_level'] : $topic->bloom_level?->value,
-                    'term' => $payload['term'] ?? $topic->term,
-                    'week_number' => $payload['week_number'] ?? $topic->week_number,
-                ]);
+                    'objective' => $payload['objective'] ?? $topic?->objective,
+                    'bloom_level' => $payload['bloom_level'] ?? $topic?->bloom_level?->value,
+                    'term' => $payload['term'] ?? $topic?->term,
+                    'week_number' => $payload['week_number'] ?? $topic?->week_number,
+                    'position' => $position + 1,
+                    'confidence' => $topic?->confidence ?? 1,
+                ];
+                if ($topic === null) {
+                    $topic = $document->syllabusTopics()->create($attributes);
+                    $refreshSuggestions = true;
+                } else {
+                    $topic->update($attributes);
+                }
+                $keptIds[] = $topic->id;
                 $refreshSuggestions = $refreshSuggestions || $topic->wasChanged(['topic_name', 'hours', 'objective', 'bloom_level', 'term']);
                 if (array_key_exists('week_number', $payload)) {
                     $topic->materials()->update(['week_number' => $topic->week_number]);
                 }
+            }
+
+            $removedTopics = $document->syllabusTopics()->whereNotIn('id', $keptIds);
+            if ((clone $removedTopics)->whereHas('materials')->exists()) {
+                throw ValidationException::withMessages([
+                    'topics' => ['Remove a topic\'s learning materials before deleting that topic.'],
+                ]);
+            }
+            if ((clone $removedTopics)->exists()) {
+                $removedTopics->delete();
+                $refreshSuggestions = true;
             }
 
             if (! $refreshSuggestions) {
@@ -382,13 +404,6 @@ class DocumentController extends Controller
         if ($project->documents()->where('kind', DocumentKind::Syllabus)->exists() && $kind === DocumentKind::Syllabus) {
             return response()->json([
                 'message' => 'Only one syllabus document is allowed per project.',
-            ], 422);
-        }
-
-        $materialCount = $project->documents()->where('kind', DocumentKind::Material)->count();
-        if (($materialCount + $newMaterialsCount) > 100) {
-            return response()->json([
-                'message' => 'A project can have at most 100 learning material documents.',
             ], 422);
         }
 

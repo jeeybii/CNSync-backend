@@ -1,0 +1,131 @@
+{
+  "context": "A router forwards packets between different networks using destination IP addresses and a routing table. A switch connects devices within the same local network and forwards frames using MAC addresses. Routers separate broadcast domains, while switches create a separate collision domain for each port.",
+  "results": [
+    {
+      "bloom": "remembering",
+      "question_type": "identification",
+      "avinash_seed": "",
+      "assistants": {
+        "gemma_only": {
+          "model": "gemma-4-26b-a4b-it",
+          "latency_seconds": 3.59,
+          "output": {
+            "question": "Which device connects devices within the same local network and forwards frames using MAC addresses?",
+            "question_type": "identification",
+            "bloom_level": "remembering",
+            "choices": [
+              "Router",
+              "Switch",
+              "Hub",
+              "Bridge"
+            ],
+            "answer": "Switch",
+            "explanation": "According to the text, a switch connects devices within the same local network and forwards frames using MAC addresses."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.833
+          }
+        }
+      }
+    },
+    {
+      "bloom": "understanding",
+      "question_type": "true_false",
+      "avinash_seed": "",
+      "assistants": {
+        "gemma_only": {
+          "model": "gemma-4-26b-a4b-it",
+          "latency_seconds": 3.91,
+          "output": {
+            "question": "While a switch uses MAC addresses to connect devices within a single local network, a router uses destination IP addresses to move packets between different networks.",
+            "question_type": "true_false",
+            "bloom_level": "understanding",
+            "choices": [],
+            "answer": "True",
+            "explanation": "According to the text, switches connect devices within the same local network using MAC addresses, whereas routers forward packets between different networks using destination IP addresses."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.765
+          }
+        }
+      }
+    },
+    {
+      "bloom": "applying",
+      "question_type": "multiple_choice",
+      "avinash_seed": "",
+      "assistants": {
+        "gemma_only": {
+          "model": "gemma-4-26b-a4b-it",
+          "latency_seconds": 4.83,
+          "output": {
+            "question": "A network administrator is setting up a new office layout. If they need to ensure that a broadcast sent by one computer does not reach all other computers in a different department, which device should they implement between the two departments?",
+            "question_type": "multiple_choice",
+            "bloom_level": "applying",
+            "choices": [
+              "A switch",
+              "A router",
+              "A MAC address",
+              "A collision domain"
+            ],
+            "answer": "A router",
+            "explanation": "According to the text, routers separate broadcast domains, which would prevent a broadcast from reaching different networks/departments."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.167
+          }
+        }
+      }
+    },
+    {
+      "bloom": "analyzing",
+      "question_type": "essay",
+      "avinash_seed": "",
+      "assistants": {
+        "gemma_only": {
+          "model": "gemma-4-26b-a4b-it",
+          "latency_seconds": 5.97,
+          "output": {
+            "question": "Compare and contrast the roles of a router and a switch in managing network traffic. In your response, analyze how their different methods of addressing and their impact on broadcast and collision domains differentiate their functions within a network architecture.",
+            "question_type": "essay",
+            "bloom_level": "analyzing",
+            "choices": [],
+            "answer": "A complete answer should: 1) Contrast addressing methods (routers use destination IP addresses; switches use MAC addresses); 2) Contrast network scope (routers forward between different networks; switches connect devices within the same local network); and 3) Analyze domain impact (routers separate broadcast domains; switches create separate collision domains for each port).",
+            "explanation": "The question requires the student to break down the components of both devices and examine the relationship between their addressing methods and their impact on network domains, which aligns with the Analyzing level of Bloom's Taxonomy."
+          },
+          "checks": {
+            "has_question": true,
+            "type_matches": true,
+            "bloom_matches": true,
+            "answer_present": true,
+            "choice_shape_valid": true,
+            "answer_in_choices": true,
+            "has_explanation": true,
+            "context_word_overlap": 0.348
+          }
+        }
+      }
+    }
+  ]
+}
