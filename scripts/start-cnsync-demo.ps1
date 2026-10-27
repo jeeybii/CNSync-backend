@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$FrontendPath = (Join-Path (Split-Path $PSScriptRoot -Parent) '..\cnsync-fe'),
+    [string]$FrontendPath,
     [int]$BackendPort = 8888,
     [switch]$DeployVercel
 )
@@ -8,6 +8,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $backendPath = (Split-Path $PSScriptRoot -Parent)
+if ([string]::IsNullOrWhiteSpace($FrontendPath)) {
+    $FrontendPath = Join-Path $backendPath '..\cnsync-fe'
+}
 $frontendPath = [System.IO.Path]::GetFullPath($FrontendPath)
 $envPath = Join-Path $backendPath '.env'
 $runtimePath = Join-Path $backendPath 'storage\logs\demo-runtime'
