@@ -190,7 +190,7 @@ try {
 
     if (-not (Test-Backend)) {
         Write-Host 'Starting Laravel...'
-        Start-CnsyncWindow 'CNSync - Laravel API' "php artisan serve --host=127.0.0.1 --port=$BackendPort"
+        Start-CnsyncWindow 'CNSync - Laravel API' "php -S localhost:$BackendPort -t public"
         $deadline = (Get-Date).AddSeconds(30)
         do { Start-Sleep -Seconds 1 } while (-not (Test-Backend) -and (Get-Date) -lt $deadline)
         if (-not (Test-Backend)) { throw "Laravel did not become ready on port $BackendPort." }
