@@ -37,7 +37,7 @@ function Start-CnsyncWindow {
 
     $location = ConvertTo-PowerShellLiteral $backendPath
     $windowCommand = "`$host.UI.RawUI.WindowTitle = '$Title'; Set-Location -LiteralPath $location; $Command"
-    Start-Process powershell.exe -ArgumentList @('-NoExit', '-NoProfile', '-Command', $windowCommand) | Out-Null
+    Start-Process powershell.exe -ArgumentList @('-NoExit', '-Command', $windowCommand) | Out-Null
 }
 
 function Test-Backend {
@@ -167,14 +167,14 @@ function Deploy-VercelFrontend {
     }
 }
 
-Assert-Command 'php.exe'
+Assert-Command 'php'
 Assert-Command 'cloudflared.exe'
 if (-not (Test-Path $envPath)) { throw "Backend .env was not found at [$envPath]." }
 
 Push-Location $backendPath
 try {
     Write-Host 'Checking the database connection...'
-    & php.exe artisan migrate:status --no-ansi | Out-Null
+    & php artisan migrate:status --no-ansi | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Laravel could not reach MySQL. Start MySQL and verify the DB_* values in .env.'
     }
@@ -219,7 +219,7 @@ try {
     $tunnel = Start-QuickTunnel
     $apiUrl = "$($tunnel.Url)/api"
     Set-DotEnvValue 'APP_URL' $tunnel.Url
-    & php.exe artisan optimize:clear --no-ansi | Out-Null
+    & php artisan optimize:clear --no-ansi | Out-Null
 
     $runtimeState = [pscustomobject]@{
         tunnel_url = $tunnel.Url
