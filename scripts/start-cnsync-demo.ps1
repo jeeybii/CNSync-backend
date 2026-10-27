@@ -130,31 +130,41 @@ function Start-QuickTunnel {
     if (Test-Path $tunnelStatePath) {
         Remove-Item $tunnelStatePath -Force
     }
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $logPath = Join-Path $runtimePath "cloudflared-$stamp.log"
-    $arguments = @('tunnel', '--logfile', $logPath, '--url', "http://localhost:$BackendPort")
-    $process = Start-Process cloudflared.exe -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    $attemptLogs = @()
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $logPath = Join-Path $runtimePath "cloudflared-$stamp-attempt-$attempt.log"
+        $attemptLogs += $logPath
+        $arguments = @('tunnel', '--logfile', $logPath, '--url', "http://localhost:$BackendPort")
+        Write-Host "Requesting Cloudflare Quick Tunnel (attempt $attempt of 3)..."
+        $process = Start-Process cloudflared.exe -ArgumentList $arguments -WindowStyle Hidden -PassThru
 
-    $deadline = (Get-Date).AddSeconds(60)
-    do {
-        Start-Sleep -Milliseconds 500
-        $text = ''
-        if (Test-Path $logPath) { $text = Get-Content $logPath -Raw -ErrorAction SilentlyContinue }
-        $match = [regex]::Match($text, 'https://[a-z0-9-]+\.trycloudflare\.com')
-        if ($match.Success) {
-            return [pscustomobject]@{
-                Process = $process
-                Url = $match.Value
-                Log = $logPath
-                Reused = $false
+        $deadline = (Get-Date).AddSeconds(120)
+        do {
+            Start-Sleep -Milliseconds 500
+            $text = ''
+            if (Test-Path $logPath) { $text = Get-Content $logPath -Raw -ErrorAction SilentlyContinue }
+            $match = [regex]::Match($text, 'https://[a-z0-9-]+\.trycloudflare\.com')
+            if ($match.Success) {
+                return [pscustomobject]@{
+                    Process = $process
+                    Url = $match.Value
+                    Log = $logPath
+                    Reused = $false
+                }
             }
-        }
-    } while ((Get-Date) -lt $deadline -and -not $process.HasExited)
+        } while ((Get-Date) -lt $deadline -and -not $process.HasExited)
 
-    if (-not $process.HasExited) {
-        Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
+        if (-not $process.HasExited) {
+            Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
+        }
+        if ($attempt -lt 3) {
+            Write-Warning "Cloudflare did not return a URL on attempt $attempt. Retrying in 3 seconds..."
+            Start-Sleep -Seconds 3
+        }
     }
-    throw "Cloudflare did not provide a Quick Tunnel URL. Check $logPath."
+
+    throw "Cloudflare did not provide a Quick Tunnel URL after 3 attempts. Check: $($attemptLogs -join ', ')"
 }
 
 function Deploy-VercelFrontend {
