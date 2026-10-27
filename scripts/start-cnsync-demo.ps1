@@ -101,24 +101,21 @@ function Start-QuickTunnel {
 
     New-Item -ItemType Directory -Path $runtimePath -Force | Out-Null
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $stdoutPath = Join-Path $runtimePath "cloudflared-$stamp.out.log"
-    $stderrPath = Join-Path $runtimePath "cloudflared-$stamp.err.log"
-    $arguments = @('tunnel', '--url', "http://localhost:$BackendPort")
-    $process = Start-Process cloudflared.exe -ArgumentList $arguments -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+    $logPath = Join-Path $runtimePath "cloudflared-$stamp.log"
+    $arguments = @('tunnel', '--logfile', $logPath, '--url', "http://localhost:$BackendPort")
+    $process = Start-Process cloudflared.exe -ArgumentList $arguments -WindowStyle Hidden -PassThru
 
     $deadline = (Get-Date).AddSeconds(60)
     do {
         Start-Sleep -Milliseconds 500
         $text = ''
-        if (Test-Path $stdoutPath) { $text += [System.IO.File]::ReadAllText($stdoutPath) }
-        if (Test-Path $stderrPath) { $text += [System.IO.File]::ReadAllText($stderrPath) }
+        if (Test-Path $logPath) { $text = Get-Content $logPath -Raw -ErrorAction SilentlyContinue }
         $match = [regex]::Match($text, 'https://[a-z0-9-]+\.trycloudflare\.com')
         if ($match.Success) {
             return [pscustomobject]@{
                 Process = $process
                 Url = $match.Value
-                Stdout = $stdoutPath
-                Stderr = $stderrPath
+                Log = $logPath
             }
         }
     } while ((Get-Date) -lt $deadline -and -not $process.HasExited)
@@ -126,7 +123,7 @@ function Start-QuickTunnel {
     if (-not $process.HasExited) {
         Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
     }
-    throw "Cloudflare did not provide a Quick Tunnel URL. Check $stderrPath."
+    throw "Cloudflare did not provide a Quick Tunnel URL. Check $logPath."
 }
 
 function Deploy-VercelFrontend {
@@ -226,7 +223,7 @@ try {
         api_url = $apiUrl
         cloudflared_pid = $tunnel.Process.Id
         started_at = (Get-Date).ToString('o')
-        stderr_log = $tunnel.Stderr
+        cloudflared_log = $tunnel.Log
     }
     $runtimeState | ConvertTo-Json | Set-Content (Join-Path $runtimePath 'current.json') -Encoding UTF8
 
