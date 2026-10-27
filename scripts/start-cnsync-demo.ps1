@@ -14,6 +14,7 @@ if ([string]::IsNullOrWhiteSpace($FrontendPath)) {
 $frontendPath = [System.IO.Path]::GetFullPath($FrontendPath)
 $envPath = Join-Path $backendPath '.env'
 $runtimePath = Join-Path $backendPath 'storage\logs\demo-runtime'
+$tunnelStatePath = Join-Path $runtimePath 'current.json'
 
 function Assert-Command {
     param([Parameter(Mandatory)][string]$Name)
@@ -91,15 +92,44 @@ function Get-DotEnvValue {
 }
 
 function Start-QuickTunnel {
-    $existing = Get-CimInstance Win32_Process -Filter "Name = 'cloudflared.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like '*tunnel*--url*' } |
-        Select-Object -First 1
+    $existing = @(Get-CimInstance Win32_Process -Filter "Name = 'cloudflared.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*tunnel*--url*' })
 
-    if ($existing) {
-        throw 'A Cloudflare Quick Tunnel is already running. Keep using its URL, or stop that cloudflared process before running this launcher so the new URL can be captured.'
+    if ((Test-Path $tunnelStatePath) -and $existing.Count -gt 0) {
+        try {
+            $state = Get-Content $tunnelStatePath -Raw | ConvertFrom-Json
+            $recordedProcess = $existing | Where-Object { $_.ProcessId -eq $state.cloudflared_pid } | Select-Object -First 1
+            if ($recordedProcess -and $state.tunnel_url) {
+                Invoke-WebRequest "$($state.tunnel_url)/up" -UseBasicParsing -TimeoutSec 10 | Out-Null
+                foreach ($extraProcess in ($existing | Where-Object { $_.ProcessId -ne $recordedProcess.ProcessId })) {
+                    Stop-Process -Id $extraProcess.ProcessId -ErrorAction SilentlyContinue
+                }
+                Write-Host "Reusing healthy Cloudflare Tunnel $($state.tunnel_url)." -ForegroundColor Green
+
+                return [pscustomobject]@{
+                    Process = Get-Process -Id $recordedProcess.ProcessId
+                    Url = [string] $state.tunnel_url
+                    Log = [string] $state.cloudflared_log
+                    Reused = $true
+                }
+            }
+        } catch {
+            Write-Warning 'The recorded Cloudflare Tunnel is no longer healthy and will be replaced.'
+        }
+    }
+
+    if ($existing.Count -gt 0) {
+        Write-Host "Stopping $($existing.Count) stale or untracked Cloudflare Quick Tunnel process(es)..."
+        foreach ($process in $existing) {
+            Stop-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 500
     }
 
     New-Item -ItemType Directory -Path $runtimePath -Force | Out-Null
+    if (Test-Path $tunnelStatePath) {
+        Remove-Item $tunnelStatePath -Force
+    }
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $logPath = Join-Path $runtimePath "cloudflared-$stamp.log"
     $arguments = @('tunnel', '--logfile', $logPath, '--url', "http://localhost:$BackendPort")
@@ -116,6 +146,7 @@ function Start-QuickTunnel {
                 Process = $process
                 Url = $match.Value
                 Log = $logPath
+                Reused = $false
             }
         }
     } while ((Get-Date) -lt $deadline -and -not $process.HasExited)
@@ -225,7 +256,7 @@ try {
         started_at = (Get-Date).ToString('o')
         cloudflared_log = $tunnel.Log
     }
-    $runtimeState | ConvertTo-Json | Set-Content (Join-Path $runtimePath 'current.json') -Encoding UTF8
+    $runtimeState | ConvertTo-Json | Set-Content $tunnelStatePath -Encoding UTF8
 
     Write-Host "Cloudflare URL: $($tunnel.Url)" -ForegroundColor Green
     Write-Host "Vercel API URL: $apiUrl" -ForegroundColor Green
@@ -239,7 +270,7 @@ try {
         Write-Host ''
         Write-Host 'The backend is ready. To also update and deploy Vercel, rerun with:' -ForegroundColor Yellow
         Write-Host '  powershell -ExecutionPolicy Bypass -File .\scripts\start-cnsync-demo.ps1 -DeployVercel'
-        Write-Host 'Stop the Cloudflare process from this run first, because each run creates a new Quick Tunnel.'
+        Write-Host 'A later run will reuse this tunnel while it remains healthy, or replace it automatically.'
     }
 } finally {
     Pop-Location
