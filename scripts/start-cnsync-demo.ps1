@@ -42,7 +42,7 @@ function Start-CnsyncWindow {
 
 function Test-Backend {
     try {
-        Invoke-WebRequest "http://127.0.0.1:$BackendPort/up" -UseBasicParsing -TimeoutSec 2 | Out-Null
+        Invoke-WebRequest "http://localhost:$BackendPort/up" -UseBasicParsing -TimeoutSec 2 | Out-Null
         return $true
     } catch {
         return $false
@@ -103,7 +103,7 @@ function Start-QuickTunnel {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $stdoutPath = Join-Path $runtimePath "cloudflared-$stamp.out.log"
     $stderrPath = Join-Path $runtimePath "cloudflared-$stamp.err.log"
-    $arguments = @('tunnel', '--url', "http://127.0.0.1:$BackendPort")
+    $arguments = @('tunnel', '--url', "http://localhost:$BackendPort")
     $process = Start-Process cloudflared.exe -ArgumentList $arguments -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
 
     $deadline = (Get-Date).AddSeconds(60)
