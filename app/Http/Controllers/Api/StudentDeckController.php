@@ -3,15 +3,15 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\ActivityLog;
+use App\Jobs\GenerateStudentDeckJob;
 use App\Models\StudentDeck;
-use App\Services\StudentDeckGeneratorService;
 use App\Services\StudentEssayGrader;
-use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class StudentDeckController extends Controller
 {
@@ -55,11 +55,8 @@ class StudentDeckController extends Controller
         return response()->json(['data' => $studentDeck]);
     }
 
-    public function store(Request $request, StudentDeckGeneratorService $generator): JsonResponse
+    public function store(Request $request): JsonResponse
     {
-        // Generation can take a while for large files.
-        set_time_limit(0);
-
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
             'number_of_items' => ['required', 'integer', 'min:1', 'max:100'],
@@ -84,64 +81,49 @@ class StudentDeckController extends Controller
             }
         }
 
-        // Extract text from all uploaded materials
-        $allChunks = [];
-        foreach ($validated['materials'] as $file) {
-            try {
-                $text = $generator->extractTextFromFile($file);
-                $allChunks = array_merge($allChunks, $generator->chunkText($text));
-            } catch (\Throwable $e) {
-                throw ValidationException::withMessages([
-                    'materials' => [sprintf('Could not read file "%s": %s', $file->getClientOriginalName(), $e->getMessage())],
-                ]);
-            }
-        }
-
-        if (empty($allChunks)) {
-            throw ValidationException::withMessages([
-                'materials' => ['No readable text content found in the uploaded files.'],
-            ]);
-        }
-
-        // Generate questions with hints
-        try {
-            $questions = $generator->generate(
-                $allChunks,
-                (int) $validated['number_of_items'],
-                $validated['question_type_distribution'] ?? null,
-            );
-        } catch (ConnectionException $e) {
-            return response()->json([
-                'message' => 'The AI took too long to respond. Please try again.',
-                'error_code' => 'ai_timeout',
-            ], 503);
-        } catch (RequestException $e) {
-            if ($e->response?->status() === 503) {
-                return response()->json([
-                    'message' => 'The AI is currently experiencing high demand. Please try again in a moment.',
-                    'error_code' => 'ai_high_demand',
-                ], 503);
-            }
-            throw $e;
-        }
-
         $deck = StudentDeck::query()->create([
             'user_id' => $request->user()->id,
             'title' => $validated['title'],
-            'status' => 'ready',
-            'number_of_items' => count($questions),
-            'questions' => $questions,
+            'status' => 'processing',
+            'number_of_items' => (int) $validated['number_of_items'],
+            'questions' => null,
+            'failed_reason' => null,
         ]);
 
-        ActivityLog::record(
-            $request->user()->id,
-            'reviewer_deck_generated',
-            sprintf('Student generated reviewer deck "%s" (%d questions)', $deck->title, $deck->number_of_items),
-            ['student_deck_id' => $deck->id, 'item_count' => $deck->number_of_items],
-            $request->ip(),
-        );
+        $materials = [];
+        try {
+            foreach ($validated['materials'] as $file) {
+                $extension = $file->getClientOriginalExtension();
+                $storedName = Str::uuid()->toString().($extension === '' ? '' : '.'.$extension);
+                $path = $file->storeAs('student-decks/'.$deck->id, $storedName, 'local');
+                if ($path === false) {
+                    throw new \RuntimeException(sprintf('Could not store file "%s".', $file->getClientOriginalName()));
+                }
 
-        return response()->json(['data' => $deck], 201);
+                $materials[] = [
+                    'path' => $path,
+                    'name' => $file->getClientOriginalName(),
+                    'mime' => $file->getMimeType(),
+                ];
+            }
+
+            GenerateStudentDeckJob::dispatch(
+                $deck->id,
+                $materials,
+                (int) $validated['number_of_items'],
+                $validated['question_type_distribution'] ?? null,
+                $request->ip(),
+            );
+        } catch (Throwable $exception) {
+            Storage::disk('local')->deleteDirectory('student-decks/'.$deck->id);
+            $deck->delete();
+
+            throw ValidationException::withMessages([
+                'materials' => [$exception->getMessage()],
+            ]);
+        }
+
+        return response()->json(['data' => $deck->fresh()], 202);
     }
 
     public function destroy(Request $request, StudentDeck $studentDeck): JsonResponse

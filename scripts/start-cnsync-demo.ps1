@@ -253,6 +253,13 @@ try {
         Write-Host 'The generation worker is already running.'
     }
 
+    if (-not (Test-WorkerRunning 'student-generation')) {
+        Write-Host 'Starting the student generation worker...'
+        Start-CnsyncWindow 'CNSync - Student Generation Queue' 'php artisan queue:work --queue=student-generation --tries=3 --timeout=0 --sleep=1'
+    } else {
+        Write-Host 'The student generation worker is already running.'
+    }
+
     Write-Host 'Creating a Cloudflare Quick Tunnel...'
     $tunnel = Start-QuickTunnel
     $apiUrl = "$($tunnel.Url)/api"
