@@ -12,6 +12,8 @@ class ProcessDocumentJob implements ShouldQueue
 {
     use Queueable;
 
+    public int $timeout = 0;
+
     public function __construct(
         public int $documentId
     ) {

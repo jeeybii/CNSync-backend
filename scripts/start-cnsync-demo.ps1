@@ -217,21 +217,16 @@ try {
         throw 'Laravel could not reach MySQL. Start MySQL and verify the DB_* values in .env.'
     }
 
-    $ollamaUrl = Get-DotEnvValue 'OLLAMA_BASE_URL'
-    if ($ollamaUrl) {
-        try {
-            Invoke-RestMethod "$($ollamaUrl.TrimEnd('/'))/api/tags" -TimeoutSec 10 | Out-Null
-            Write-Host "Ollama is reachable at $ollamaUrl" -ForegroundColor Green
-        } catch {
-            Write-Warning "Ollama is not reachable at $ollamaUrl. The app can start, but local exam generation will fail until Ollama and Tailscale are available."
-        }
+    $geminiApiKey = Get-DotEnvValue 'GEMINI_API_KEY'
+    if ($geminiApiKey) {
+        Write-Host 'Gemini API key is configured.' -ForegroundColor Green
     } else {
-        Write-Warning 'OLLAMA_BASE_URL is not configured in the backend .env.'
+        Write-Warning 'GEMINI_API_KEY is not configured. AI generation and syllabus extraction will fail.'
     }
 
     if (-not (Test-Backend)) {
         Write-Host 'Starting Laravel...'
-        Start-CnsyncWindow 'CNSync - Laravel API' "php -S localhost:$BackendPort -t public"
+        Start-CnsyncWindow 'CNSync - Laravel API' "php -d upload_max_filesize=256M -d post_max_size=270M -d memory_limit=512M -S localhost:$BackendPort -t public"
         $deadline = (Get-Date).AddSeconds(30)
         do { Start-Sleep -Seconds 1 } while (-not (Test-Backend) -and (Get-Date) -lt $deadline)
         if (-not (Test-Backend)) { throw "Laravel did not become ready on port $BackendPort." }

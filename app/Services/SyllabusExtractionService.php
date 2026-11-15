@@ -45,6 +45,7 @@ class SyllabusExtractionService
             'Recommend question-type percentages separately for each term using its topic objectives/context and the suggested Bloom levels; do not use the same generic mix for both terms unless the content warrants it.',
             'topics must be top-level syllabus topics only, not their subtopics.',
             'topic_name must contain only the concise topic title (maximum 150 characters). Never put analysis, explanations, or extraction notes in topic_name.',
+            'objective must be a brief outcome statement of no more than 18 words. Summarize longer source objectives without losing the main action and concept.',
             'Keep topics in exactly the same reading order as the syllabus; do not alphabetize, group, or reorder them by term or week.',
             'Each topic must have: topic_name, hours, objective, bloom_level, confidence, term, week_number.',
             'hours must be numeric and positive.',
@@ -89,9 +90,7 @@ class SyllabusExtractionService
             $topics[] = [
                 'topic_name' => $name,
                 'hours' => (float) $hours,
-                'objective' => isset($topic['objective']) && is_string($topic['objective'])
-                    ? trim($topic['objective'])
-                    : null,
+                'objective' => $this->summarizeObjective($topic['objective'] ?? null),
                 'bloom_level' => $this->normalizeBloomLevel($topic['bloom_level'] ?? null) ?? 'understanding',
                 'confidence' => $confidence,
                 'term' => in_array(strtolower((string) ($topic['term'] ?? '')), ['midterm', 'final'], true)
@@ -174,6 +173,26 @@ class SyllabusExtractionService
         }
 
         return $name;
+    }
+
+    private function summarizeObjective(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $objective = preg_replace('/\s+/u', ' ', trim($value)) ?? '';
+        if ($objective === '') {
+            return null;
+        }
+
+        $firstSentence = preg_split('/(?<=[.!?])\s+/u', $objective, 2)[0] ?? $objective;
+        $words = preg_split('/\s+/u', trim($firstSentence)) ?: [];
+        if (count($words) <= 18) {
+            return trim($firstSentence);
+        }
+
+        return rtrim(implode(' ', array_slice($words, 0, 18)), ',;:.').'…';
     }
 
     /** @return array<string, mixed> */

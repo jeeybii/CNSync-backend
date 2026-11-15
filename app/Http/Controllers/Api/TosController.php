@@ -45,8 +45,10 @@ class TosController extends Controller
         $this->validateUniqueBloomLevels($validated['bloom_levels']);
 
         $bloomDistribution = $this->buildEqualDistribution($validated['bloom_levels']);
-        $topicWeights = $this->buildTopicWeights($validated['topics']);
-        $topicItemCounts = $this->allocateByLargestRemainder($topicWeights, (int) $validated['total_items']);
+        [$topicWeights, $topicItemCounts] = $this->allocateTopicItems(
+            $validated['topics'],
+            (int) $validated['total_items'],
+        );
 
         $tosRun = $this->createRunFromTopics(
             $project,
@@ -95,8 +97,10 @@ class TosController extends Controller
         }
 
         $bloomDistribution = $this->buildEqualDistribution($validated['bloom_levels']);
-        $topicWeights = $this->buildTopicWeights($topics);
-        $topicItemCounts = $this->allocateByLargestRemainder($topicWeights, (int) $validated['total_items']);
+        [$topicWeights, $topicItemCounts] = $this->allocateTopicItems(
+            $topics,
+            (int) $validated['total_items'],
+        );
 
         $tosRun = $this->createRunFromTopics(
             $project,
@@ -196,7 +200,7 @@ class TosController extends Controller
                 'name' => $topic['name'],
                 'hours' => $topic['hours'],
             ], $termTopics);
-            $weights = $this->buildTopicWeights($topics);
+            [$weights, $topicItemCounts] = $this->allocateTopicItems($topics, $totalItems);
             $runs[$term] = [
                 'total_items' => $totalItems,
                 'topics' => $topics,
@@ -206,7 +210,7 @@ class TosController extends Controller
                     $bloomDistribution,
                 ),
                 'topic_weights' => $weights,
-                'topic_item_counts' => $this->allocateByLargestRemainder($weights, $totalItems),
+                'topic_item_counts' => $topicItemCounts,
                 'question_type_percentages' => $percentages,
                 'question_type_distribution' => $suggestions->counts($percentages, $totalItems),
             ];
@@ -359,6 +363,126 @@ class TosController extends Controller
     }
 
     /**
+     * Allocates at least one item to every retained topic. When there are more
+     * topics than items, the lowest-weight topics are omitted; ties omit later
+     * syllabus topics first. Retained weights are normalized to total 100%.
+     *
+     * @param  array<int, array<string, mixed>>  $topics
+     * @return array{0: array<int, float>, 1: array<int, int>}
+     */
+    private function allocateTopicItems(array $topics, int $totalItems): array
+    {
+        $rawWeights = $this->buildTopicWeights($topics);
+        $rankedIndexes = array_keys($topics);
+        usort($rankedIndexes, static function (int $left, int $right) use ($rawWeights): int {
+            $weightComparison = $rawWeights[$right] <=> $rawWeights[$left];
+
+            return $weightComparison !== 0 ? $weightComparison : $left <=> $right;
+        });
+
+        $retainedIndexes = array_slice($rankedIndexes, 0, min($totalItems, count($topics)));
+        sort($retainedIndexes);
+        $retainedWeightTotal = array_sum(array_map(
+            static fn (int $index): float => $rawWeights[$index],
+            $retainedIndexes,
+        ));
+
+        $normalizedWeights = array_fill(0, count($topics), 0.0);
+        foreach ($retainedIndexes as $index) {
+            $normalizedWeights[$index] = $rawWeights[$index] / $retainedWeightTotal;
+        }
+
+        $itemCounts = array_fill(0, count($topics), 0);
+        foreach ($retainedIndexes as $index) {
+            $itemCounts[$index] = 1;
+        }
+
+        $remaining = $totalItems - count($retainedIndexes);
+        if ($remaining > 0) {
+            $retainedWeights = array_map(
+                static fn (int $index): float => $normalizedWeights[$index],
+                $retainedIndexes,
+            );
+            $additionalCounts = $this->allocateByLargestRemainder($retainedWeights, $remaining);
+            foreach ($retainedIndexes as $position => $index) {
+                $itemCounts[$index] += $additionalCounts[$position];
+            }
+        }
+
+        return [$normalizedWeights, $itemCounts];
+    }
+
+    /**
+     * Builds an integer topic-by-Bloom matrix that preserves every topic row
+     * total and every global Bloom column total.
+     *
+     * @param  array<int, int>  $topicItemCounts
+     * @param  array<int, float>  $bloomWeights
+     * @param  array<int, int>  $globalBloomCounts
+     * @return array<int, array<int, int>>
+     */
+    private function allocateBloomMatrix(array $topicItemCounts, array $bloomWeights, array $globalBloomCounts): array
+    {
+        $matrix = [];
+        $fractions = [];
+        $rowDeficits = [];
+        $columnAllocated = array_fill(0, count($globalBloomCounts), 0);
+
+        foreach ($topicItemCounts as $topicIndex => $topicTotal) {
+            $matrix[$topicIndex] = [];
+            $fractions[$topicIndex] = [];
+            foreach ($bloomWeights as $bloomIndex => $weight) {
+                $ideal = $topicTotal * $weight;
+                $floor = (int) floor($ideal);
+                $matrix[$topicIndex][$bloomIndex] = $floor;
+                $fractions[$topicIndex][$bloomIndex] = $ideal - $floor;
+                $columnAllocated[$bloomIndex] += $floor;
+            }
+            $rowDeficits[$topicIndex] = $topicTotal - array_sum($matrix[$topicIndex]);
+        }
+
+        $columnDeficits = array_map(
+            static fn (int $target, int $allocated): int => $target - $allocated,
+            $globalBloomCounts,
+            $columnAllocated,
+        );
+
+        while (array_sum($rowDeficits) > 0) {
+            $candidates = [];
+            foreach ($rowDeficits as $topicIndex => $rowDeficit) {
+                if ($rowDeficit <= 0) {
+                    continue;
+                }
+                foreach ($columnDeficits as $bloomIndex => $columnDeficit) {
+                    if ($columnDeficit > 0) {
+                        $candidates[] = [$fractions[$topicIndex][$bloomIndex], $topicIndex, $bloomIndex];
+                    }
+                }
+            }
+
+            usort($candidates, static function (array $left, array $right): int {
+                $fractionComparison = $right[0] <=> $left[0];
+                if ($fractionComparison !== 0) {
+                    return $fractionComparison;
+                }
+
+                return $left[1] <=> $right[1] ?: $left[2] <=> $right[2];
+            });
+
+            if ($candidates === []) {
+                throw new InvalidArgumentException('Unable to complete the Bloom allocation matrix.');
+            }
+
+            [, $topicIndex, $bloomIndex] = $candidates[0];
+            $matrix[$topicIndex][$bloomIndex]++;
+            $rowDeficits[$topicIndex]--;
+            $columnDeficits[$bloomIndex]--;
+        }
+
+        return $matrix;
+    }
+
+    /**
      * @param  array<int, array{name:string,hours:float|int}>  $topics
      * @param  array<string, float>  $bloomDistribution
      * @param  array<int, float>  $topicWeights
@@ -385,9 +509,11 @@ class TosController extends Controller
             $totalItems,
         );
 
-        // Remaining global budget per bloom level — draw from it per topic.
-        /** @var array<string, int> $bloomBudget */
-        $bloomBudget = array_combine($bloomLevels, $globalBloomCounts);
+        $topicBloomMatrix = $this->allocateBloomMatrix(
+            $topicItemCounts,
+            array_values($bloomDistribution),
+            $globalBloomCounts,
+        );
 
         $allocationRows = [];
         foreach ($topics as $index => $topic) {
@@ -396,25 +522,11 @@ class TosController extends Controller
                 continue;
             }
 
-            $totalBudget = array_sum($bloomBudget);
-            if ($totalBudget <= 0) {
-                break;
-            }
-
-            // Distribute this topic's items proportionally from the remaining budget.
-            $weights = array_map(
-                static fn (int $b): float => $b / $totalBudget,
-                array_values($bloomBudget),
-            );
-            $topicBloomCounts = $this->allocateByLargestRemainder($weights, $topicTotalItems);
-
             foreach ($bloomLevels as $bi => $bloomLevel) {
-                $itemCount = $topicBloomCounts[$bi];
+                $itemCount = $topicBloomMatrix[$index][$bi];
                 if ($itemCount === 0) {
                     continue;
                 }
-
-                $bloomBudget[$bloomLevel] -= $itemCount;
 
                 $allocationRows[] = [
                     'syllabus_topic_id' => $topic['syllabus_topic_id'] ?? null,

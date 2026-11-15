@@ -74,6 +74,73 @@ test('document upload stores file and writes lifecycle transition trail', functi
         ->assertJsonPath('data.2.to_status', DocumentStatus::Analyzed->value);
 });
 
+test('faculty can upload a large searchable learning material', function () {
+    Storage::fake('local');
+    bindFakeDocumentExtractor();
+
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    $syllabus = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::TosReady,
+    ]);
+    $topic = SyllabusTopic::query()->create([
+        'project_id' => $project->id,
+        'document_id' => $syllabus->id,
+        'topic_name' => 'Large Reference Material',
+        'hours' => 3,
+        'position' => 1,
+    ]);
+
+    $this->post("/api/projects/{$project->id}/syllabus-topics/{$topic->id}/materials", [
+        'materials' => [
+            UploadedFile::fake()->create('209-page-reference.pdf', 200 * 1024, 'application/pdf'),
+        ],
+    ], facultyAuthHeader($user))
+        ->assertCreated()
+        ->assertJsonPath('data.0.status', DocumentStatus::Analyzed->value);
+});
+
+test('a syllabus topic accepts at most five learning materials', function () {
+    Storage::fake('local');
+    bindFakeDocumentExtractor();
+
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    $syllabus = Document::factory()->for($project)->create([
+        'kind' => DocumentKind::Syllabus,
+        'status' => DocumentStatus::TosReady,
+    ]);
+    $topic = SyllabusTopic::query()->create([
+        'project_id' => $project->id,
+        'document_id' => $syllabus->id,
+        'topic_name' => 'Network Security',
+        'hours' => 3,
+        'position' => 1,
+    ]);
+
+    Document::factory()->count(5)->for($project)->create([
+        'kind' => DocumentKind::Material,
+        'syllabus_topic_id' => $topic->id,
+    ]);
+
+    $this->post("/api/projects/{$project->id}/syllabus-topics/{$topic->id}/materials", [
+        'materials' => [UploadedFile::fake()->create('sixth.pdf', 100, 'application/pdf')],
+    ], facultyAuthHeader($user))
+        ->assertUnprocessable()
+        ->assertJsonPath('message', 'A topic can have at most 5 learning materials.');
+
+    $this->post("/api/projects/{$project->id}/documents", [
+        'kind' => 'material',
+        'file' => UploadedFile::fake()->create('also-sixth.pdf', 100, 'application/pdf'),
+        'syllabus_topic_id' => $topic->id,
+    ], facultyAuthHeader($user))
+        ->assertUnprocessable()
+        ->assertJsonPath('message', 'A topic can have at most 5 learning materials.');
+
+    expect($topic->materials()->count())->toBe(5);
+});
+
 test('document list and show are scoped to project', function () {
     Storage::fake('local');
     bindFakeDocumentExtractor();

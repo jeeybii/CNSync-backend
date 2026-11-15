@@ -31,7 +31,7 @@ test('faculty can extract structured syllabus topics from analyzed syllabus docu
                                         [
                                             'topic_name' => "Neural Networks\n".str_repeat("\t", 300).'This is model reasoning that must not be saved as the topic name.',
                                             'hours' => 6,
-                                            'objective' => 'Explain and apply basic ANN models',
+                                            'objective' => 'Explain and apply basic artificial neural network models while comparing their architecture, training process, limitations, and practical applications in modern systems.',
                                             'bloom_level' => 'apply',
                                             'confidence' => 0.92,
                                         ],
@@ -70,6 +70,7 @@ test('faculty can extract structured syllabus topics from analyzed syllabus docu
         ->assertOk()
         ->assertJsonCount(2, 'data')
         ->assertJsonPath('data.0.topic_name', 'Neural Networks')
+        ->assertJsonPath('data.0.objective', 'Explain and apply basic artificial neural network models while comparing their architecture, training process, limitations, and practical applications…')
         ->assertJsonPath('data.0.position', 1)
         ->assertJsonPath('data.1.position', 2);
 

@@ -63,12 +63,21 @@ class DocumentTextExtractor
 
     private function extractPdfText(Filesystem $disk, string $path): string
     {
-        $binary = $disk->get($path);
-
+        // Try the streaming command first. Reading a large PDF into a PHP
+        // string before pdftotext runs can unnecessarily double memory use.
         $text = $this->extractPdfTextViaCommand($disk, $path);
         if (! blank($text)) {
             return $text;
         }
+
+        $size = $disk->size($path);
+        if ($size > 32 * 1024 * 1024) {
+            throw new RuntimeException(
+                'No selectable text was found in this large PDF. If it is scanned or image-only, run OCR or export it as a searchable PDF before uploading.'
+            );
+        }
+
+        $binary = $disk->get($path);
 
         // Fallback heuristic for simple PDFs when pdftotext is unavailable.
         preg_match_all('/\((.*?)\)\s*Tj/s', $binary, $singleMatches);
@@ -85,7 +94,14 @@ class DocumentTextExtractor
             $parts,
         );
 
-        return trim(preg_replace('/\s+/', ' ', implode(' ', $decoded)) ?? '');
+        $fallbackText = trim(preg_replace('/\s+/', ' ', implode(' ', $decoded)) ?? '');
+        if ($fallbackText === '') {
+            throw new RuntimeException(
+                'No selectable text was found in this PDF. If it is scanned or image-only, run OCR or export it as a searchable PDF before uploading.'
+            );
+        }
+
+        return $fallbackText;
     }
 
     private function extractPdfTextViaCommand(Filesystem $disk, string $path): ?string

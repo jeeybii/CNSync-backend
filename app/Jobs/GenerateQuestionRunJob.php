@@ -36,7 +36,7 @@ class GenerateQuestionRunJob implements ShouldQueue
         public ?array $distribution,
         public ?string $ipAddress,
     ) {
-        // Long-running local-model requests must never hold up document parsing.
+        // Question generation must never hold up document parsing.
         $this->onQueue('generation');
     }
 

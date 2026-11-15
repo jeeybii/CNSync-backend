@@ -44,6 +44,52 @@ test('faculty can create deterministic tos run and allocations sum to requested 
         ->sum('item_count'))->toBe(8);
 });
 
+test('tos reserves one item per topic before distributing the remainder', function () {
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Syllabus, 'status' => DocumentStatus::TosReady]);
+
+    $response = $this->postJson("/api/projects/{$project->id}/tos-runs", [
+        'total_items' => 10,
+        'topics' => [
+            ['name' => 'Orientation', 'hours' => 1],
+            ['name' => 'Internet of Things', 'hours' => 13],
+            ['name' => 'Cloud Computing', 'hours' => 13],
+        ],
+        'bloom_levels' => ['remembering', 'understanding', 'applying'],
+    ], facultyTosAuthHeader($user))->assertCreated();
+
+    $allocations = collect($response->json('data.allocations'));
+
+    expect($allocations->where('topic_name', 'Orientation')->sum('item_count'))->toBe(1)
+        ->and($allocations->where('topic_name', 'Internet of Things')->sum('item_count'))->toBe(5)
+        ->and($allocations->where('topic_name', 'Cloud Computing')->sum('item_count'))->toBe(4)
+        ->and($allocations->groupBy('bloom_level')->map->sum('item_count')->sort()->values()->all())
+        ->toBe([3, 3, 4]);
+});
+
+test('tos omits the lowest weight and later equal weight topics when items are fewer than topics', function () {
+    $user = User::factory()->create();
+    $project = Project::factory()->for($user)->create();
+    Document::factory()->for($project)->create(['kind' => DocumentKind::Syllabus, 'status' => DocumentStatus::TosReady]);
+
+    $response = $this->postJson("/api/projects/{$project->id}/tos-runs", [
+        'total_items' => 2,
+        'topics' => [
+            ['name' => 'High Weight', 'hours' => 5],
+            ['name' => 'Equal Earlier', 'hours' => 2],
+            ['name' => 'Equal Later', 'hours' => 2],
+            ['name' => 'Lowest Weight', 'hours' => 1],
+        ],
+        'bloom_levels' => ['remembering', 'understanding', 'applying'],
+    ], facultyTosAuthHeader($user))->assertCreated();
+
+    $topics = collect($response->json('data.allocations'))->pluck('topic_name')->unique()->values()->all();
+
+    expect($topics)->toBe(['High Weight', 'Equal Earlier'])
+        ->and(collect($response->json('data.allocations'))->sum('item_count'))->toBe(2);
+});
+
 test('tos run show and index are scoped to owner project', function () {
     $owner = User::factory()->create();
     $other = User::factory()->create();

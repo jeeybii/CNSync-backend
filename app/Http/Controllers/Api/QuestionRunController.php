@@ -340,8 +340,8 @@ class QuestionRunController extends Controller
             }
 
             $remainingRequests = array_slice($requests, $persistedItems->count());
-            // Ollama produces one question per request, so persist each valid
-            // result immediately. Remote providers can still use larger batches.
+            // Gemini can generate a small batch in one request while each
+            // completed batch is persisted for resumable generation.
             $batchSize = strtolower((string) config('services.ai.provider', 'gemini')) === 'ollama'
                 ? 1
                 : max(1, (int) config('services.ai.question_batch_size', 5));
@@ -397,7 +397,7 @@ class QuestionRunController extends Controller
                                 $generatedQuestionType = QuestionType::MultipleChoice->value;
                             }
 
-                            Log::warning('Falling back to Gemini after local model duplicate exhaustion.', [
+                            Log::warning('Retrying Gemini with a compatible question type after duplicate exhaustion.', [
                                 'question_run_id' => $questionRun->id,
                                 'topic' => $requestSpec['topic_name'],
                                 'bloom_level' => $requestSpec['bloom_level'],
@@ -481,7 +481,6 @@ class QuestionRunController extends Controller
                 return $this->cancelledResponse($questionRun);
             }
 
-            // Gemini did not respond at all (timeout / network unreachable).
             $questionRun->update([
                 'status' => 'failed',
                 'failed_reason' => $exception->getMessage(),
@@ -495,7 +494,7 @@ class QuestionRunController extends Controller
 
             return response()->json([
                 'message' => $unreachable
-                    ? 'Neither Ollama AI PC is reachable. Start Ollama and confirm Tailscale is connected on both PCs.'
+                    ? 'Gemini could not be reached. Check the server internet connection and Gemini API configuration.'
                     : 'The AI took too long to respond. Please try again.',
                 'error_code' => $unreachable ? 'ai_unavailable' : 'ai_timeout',
             ], 503);

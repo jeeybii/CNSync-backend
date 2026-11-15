@@ -46,9 +46,9 @@ return [
     ],
 
     'ai' => [
-        'provider' => env('AI_PROVIDER', 'gemini'),
-        'syllabus_provider' => env('SYLLABUS_AI_PROVIDER', 'gemini'),
-        'student_provider' => env('STUDENT_AI_PROVIDER', 'gemini'),
+        'provider' => 'gemini',
+        'syllabus_provider' => 'gemini',
+        'student_provider' => 'gemini',
         'question_batch_size' => (int) env('AI_QUESTION_BATCH_SIZE', 5),
     ],
 

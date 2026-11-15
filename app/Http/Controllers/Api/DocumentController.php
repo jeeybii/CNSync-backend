@@ -22,6 +22,10 @@ use Illuminate\Validation\ValidationException;
 
 class DocumentController extends Controller
 {
+    private const MAX_DOCUMENT_SIZE_KB = 262144;
+
+    private const MAX_MATERIALS_PER_TOPIC = 5;
+
     public function index(Project $project): JsonResponse
     {
         $documents = $project->documents()
@@ -34,7 +38,7 @@ class DocumentController extends Controller
     public function store(Request $request, Project $project): JsonResponse
     {
         $validated = $request->validate([
-            'file' => ['required', 'file', 'max:65536', 'mimes:pdf,doc,docx,txt,pptx'],
+            'file' => ['required', 'file', 'max:'.self::MAX_DOCUMENT_SIZE_KB, 'mimes:pdf,doc,docx,txt,pptx'],
             'kind' => ['required', Rule::enum(DocumentKind::class)],
             'syllabus_topic_id' => ['nullable', 'integer', 'min:1'],
         ]);
@@ -61,6 +65,10 @@ class DocumentController extends Controller
                     'message' => 'Extract the syllabus first, then upload each learning material to a syllabus topic.',
                 ], 422);
             }
+
+            if ($topic->materials()->count() >= self::MAX_MATERIALS_PER_TOPIC) {
+                return $this->topicMaterialLimitResponse();
+            }
         }
         $document = $this->createDocument($project, $file, $kind, $topic);
 
@@ -85,9 +93,13 @@ class DocumentController extends Controller
         }
 
         $validated = $request->validate([
-            'materials' => ['required', 'array', 'min:1'],
-            'materials.*' => ['required', 'file', 'max:65536', 'mimes:pdf,doc,docx,txt,pptx'],
+            'materials' => ['required', 'array', 'min:1', 'max:'.self::MAX_MATERIALS_PER_TOPIC],
+            'materials.*' => ['required', 'file', 'max:'.self::MAX_DOCUMENT_SIZE_KB, 'mimes:pdf,doc,docx,txt,pptx'],
         ]);
+
+        if ($syllabusTopic->materials()->count() + count($validated['materials']) > self::MAX_MATERIALS_PER_TOPIC) {
+            return $this->topicMaterialLimitResponse();
+        }
 
         $materials = collect($validated['materials'])
             ->map(fn ($file) => $this->createDocument($project, $file, DocumentKind::Material, $syllabusTopic)->fresh())
@@ -120,6 +132,11 @@ class DocumentController extends Controller
 
         if ($topic === null) {
             return response()->json(['message' => 'This topic is not part of an extracted syllabus in the project.'], 422);
+        }
+
+        if ($document->syllabus_topic_id !== $topic->id
+            && $topic->materials()->count() >= self::MAX_MATERIALS_PER_TOPIC) {
+            return $this->topicMaterialLimitResponse();
         }
 
         $document->update([
@@ -408,5 +425,15 @@ class DocumentController extends Controller
         }
 
         return null;
+    }
+
+    private function topicMaterialLimitResponse(): JsonResponse
+    {
+        return response()->json([
+            'message' => 'A topic can have at most '.self::MAX_MATERIALS_PER_TOPIC.' learning materials.',
+            'errors' => [
+                'materials' => ['A topic can have at most '.self::MAX_MATERIALS_PER_TOPIC.' learning materials.'],
+            ],
+        ], 422);
     }
 }
