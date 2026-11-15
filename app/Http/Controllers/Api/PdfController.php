@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\File;
 use Mpdf\Mpdf;
 use Mpdf\MpdfException;
 use RuntimeException;
@@ -33,14 +34,26 @@ class PdfController extends Controller
         $tmpBase = $tmpDir.DIRECTORY_SEPARATOR.'cnsync_'.uniqid();
         $docxPath = $tmpBase.'.docx';
         $pdfPath = $tmpBase.'.pdf';
+        $profileDir = $tmpDir.DIRECTORY_SEPARATOR.'cnsync_lo_'.bin2hex(random_bytes(8));
+        $profileUri = $this->libreOfficeProfileUri($profileDir);
 
         try {
             $request->file('file')->move($tmpDir, basename($docxPath));
 
-            // LibreOffice outputs <filename>.pdf next to the source file
+            // Each request needs an isolated writable profile. The PHP-FPM
+            // user commonly has a non-writable home (for example /var/www),
+            // and shared LibreOffice profiles also collide during concurrent
+            // exports.
+            $environment = PHP_OS_FAMILY === 'Windows'
+                ? ''
+                : 'HOME='.escapeshellarg($tmpDir).' ';
+
+            // LibreOffice outputs <filename>.pdf next to the source file.
             $cmd = sprintf(
-                '%s --headless --convert-to pdf %s --outdir %s 2>&1',
+                '%s%s -env:UserInstallation=%s --headless --convert-to pdf %s --outdir %s 2>&1',
+                $environment,
                 $soffice,
+                escapeshellarg($profileUri),
                 escapeshellarg($docxPath),
                 escapeshellarg($tmpDir),
             );
@@ -59,6 +72,9 @@ class PdfController extends Controller
             }
             if (file_exists($pdfPath)) {
                 @unlink($pdfPath);
+            }
+            if (is_dir($profileDir)) {
+                File::deleteDirectory($profileDir);
             }
         }
 
@@ -142,5 +158,14 @@ class PdfController extends Controller
 
         // Linux / any other — expect `soffice` in PATH
         return 'soffice';
+    }
+
+    private function libreOfficeProfileUri(string $path): string
+    {
+        $normalized = str_replace(DIRECTORY_SEPARATOR, '/', $path);
+
+        return PHP_OS_FAMILY === 'Windows'
+            ? 'file:///'.ltrim($normalized, '/')
+            : 'file://'.$normalized;
     }
 }
