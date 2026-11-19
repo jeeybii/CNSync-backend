@@ -14,6 +14,7 @@ class AdminActivityLogController extends Controller
         'login',
         'logout',
         'upload',
+        'generation',
         'exam_generated',
         'reviewer_deck_generated',
     ];
@@ -30,7 +31,9 @@ class AdminActivityLogController extends Controller
             ->with('user:id,first_name,last_name,email,role')
             ->orderByDesc('created_at');
 
-        if (! blank($validated['action'] ?? null)) {
+        if (($validated['action'] ?? null) === 'generation') {
+            $query->whereIn('action', ['exam_generated', 'reviewer_deck_generated']);
+        } elseif (! blank($validated['action'] ?? null)) {
             $query->where('action', $validated['action']);
         }
 
